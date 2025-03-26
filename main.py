@@ -58,3 +58,4 @@ if __name__ == '__main__':
     data = Data(frequency=frequency_, use_pickle_data=True)
     ticker_mapping, stock_prices, index_weights = data.get_data()
     pass
+    pass
