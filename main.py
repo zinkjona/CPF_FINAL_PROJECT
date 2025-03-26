@@ -59,3 +59,4 @@ if __name__ == '__main__':
     ticker_mapping, stock_prices, index_weights = data.get_data()
     pass
     pass
+    pass
