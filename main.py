@@ -7,15 +7,13 @@ stock_prices_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final P
 index_weights_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/index_weights.pkl'
 
 class Data:
-    def __init__(self, frequency: str = 'D', use_pickle_data: bool = True):
-        self.frequency = frequency
-        self.use_pickle_data = use_pickle_data
+    def __init__(self, params: dict):
+        self.price_frequency_str = params['price_frequency_str']
+        self.use_pickle_data = params['use_pickle_data']
 
     def get_data(self):
 
         if self.use_pickle_data:
-            with open(ticker_pickle_file_path, 'rb') as file:
-                ticker_mapping = pickle.load(file)
 
             with open(stock_prices_pickle_file_path, 'rb') as file:
                 stock_prices = pickle.load(file)
@@ -27,15 +25,19 @@ class Data:
             ticker_mapping = pd.read_excel(
                 r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\isin_msci_ticker_mapping.xlsx')
             ticker_mapping.drop(columns=['Unnamed: 0'], inplace=True)
-
-            with open(ticker_pickle_file_path, 'wb') as file:
-                pickle.dump(ticker_mapping, file)
+            ticker_mapping['MSCI_SECURITY_CODE'] = ticker_mapping['MSCI_SECURITY_CODE'].astype(str)
+            ticker_mapping['BBG_TICKER'] = ticker_mapping['BBG_TICKER'].astype(str)
+            mapping_dict = dict(zip(ticker_mapping['MSCI_SECURITY_CODE'], ticker_mapping['BBG_TICKER']))
 
             # 2. Stock Prices
             stock_prices = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\stock_prices.xlsx')
             stock_prices.index = stock_prices['POS_DATE']
             stock_prices.drop(columns=['POS_DATE'], inplace=True)
-            stock_prices = stock_prices.resample(self.frequency).last()
+            if self.price_frequency_str == 'D':
+                pass
+            else:
+                stock_prices = stock_prices.resample(self.price_frequency_str).last()
+            stock_prices = stock_prices.rename(columns=mapping_dict)
 
             with open(stock_prices_pickle_file_path, 'wb') as file:
                 pickle.dump(stock_prices, file)
@@ -44,19 +46,177 @@ class Data:
             index_weights = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\index_weight.xlsx')
             index_weights.index = index_weights['AS_OF_DATE']
             index_weights.drop(columns=['AS_OF_DATE'], inplace=True)
-            index_weights = index_weights.resample(self.frequency).last()
+            # index_weights = index_weights.resample(self.frequency).last()
+            index_weights = index_weights.rename(columns=mapping_dict)
+
 
             with open(index_weights_pickle_file_path, 'wb') as file:
                 pickle.dump(index_weights, file)
 
-        return ticker_mapping, stock_prices, index_weights
+        self.stock_prices = stock_prices
+        self.index_weights = index_weights
 
+
+class Factors:
+
+    def __init__(self, data: Data, params: dict):
+        self.price_frequency_num = params['price_frequency_num']
+        self.equal_weighted_stocks = params['equal_weighted_stocks']
+        self.index_weights = data.index_weights
+        self.stock_prices = data.stock_prices
+
+    def get_factor_scores(self):
+        # 1. Momentum
+        # 1. 1. Calculate 12-Month Returns
+        perf_12m = self.stock_prices / self.stock_prices.shift(self.price_frequency_num) - 1
+
+        # 1.2. Calculate Momentum Ranks
+        momentum_ranks = pd.DataFrame(index=perf_12m.index, columns=perf_12m.columns)
+        for date in perf_12m.index:
+            row = perf_12m.loc[date]
+            try:
+                ranks = row.rank(method="first", ascending=False)
+                quintiles = pd.qcut(ranks, q=5, labels=[5, 4, 3, 2, 1])
+                momentum_ranks.loc[date] = quintiles
+            except ValueError:
+                # wenn zu viele NaNs in der Zeile sind
+                momentum_ranks.loc[date] = np.nan
+
+        # 2. Low-Volatility
+        # 2. 1. Calculate Standard Deviation
+        vol_12m = self.stock_prices.pct_change().rolling(self.price_frequency_num).std() * np.sqrt(self.price_frequency_num)
+
+        # 2. 2. Calculate Low-Volatility Ranks
+        vol_ranks = pd.DataFrame(index=vol_12m.index, columns=vol_12m.columns)
+        for date in vol_12m.index:
+            row = vol_12m.loc[date]
+            try:
+                ranks = row.rank(method="first", ascending=False)
+                quintiles = pd.qcut(ranks, q=5, labels=[1, 2, 3, 4, 5])
+                vol_ranks.loc[date] = quintiles
+            except ValueError:
+                # wenn zu viele NaNs in der Zeile sind
+                vol_ranks.loc[date] = np.nan
+
+
+        self.mom_ranks = momentum_ranks
+        self.vol_ranks = vol_ranks
+
+    def get_factor_weight(self):
+        self.factor_weight = pd.DataFrame(index = self.stock_prices.index, columns = ['WEIGHT_MOM', 'WEIGHT_MIN_VOL'])
+        self.factor_weight['WEIGHT_MOM'] = 0.5
+        self.factor_weight['WEIGHT_MIN_VOL'] = 0.5
+
+    def get_stock_weights(self):
+
+
+        # 1. Multiply Factor Scores with Factor Weights
+        factors_weighted = self.mom_ranks.mul(self.factor_weight['WEIGHT_MOM'], axis=0) + self.vol_ranks.mul(self.factor_weight['WEIGHT_MIN_VOL'], axis=0)
+
+        # 2. Deal with nan
+        row_sums = factors_weighted.sum(axis=1)
+        row_sums = row_sums.replace(0, np.nan)
+
+        # 3. Calculate factored stock weights
+        stock_weights = factors_weighted.div(row_sums, axis=0)
+
+
+        if self.equal_weighted_stocks:
+            n_assets = stock_weights.notna().sum(axis=1)
+            stock_equal_weight = stock_weights.notna().div(n_assets, axis=0)
+            stock_equal_weight = stock_equal_weight.where(stock_weights.notna())
+            stock_weights = stock_equal_weight.copy(deep=True)
+
+        stock_weights.index = pd.to_datetime(stock_weights.index)
+        self.stock_weights = stock_weights.copy(deep=True)
+
+class Backtest:
+
+    def __init__(self, data: Data, factors: Factors, params: dict):
+        self.price_frequency_num = params['price_frequency_num']
+        self.stock_prices = data.stock_prices
+        self.stock_weights = factors.stock_weights
+
+    def run_backtest(self):
+        returns = self.stock_prices.pct_change()
+        returns.index = pd.to_datetime(returns.index)
+
+        month_ends = self.stock_weights.index.to_series().groupby(self.stock_weights.index.to_period("M")).last()
+        portfolio_returns = pd.Series(index=returns.index, dtype=float)
+
+        for date in month_ends[:-1]:
+            print(date)
+            # Sicherstellen, dass für diesen Rebalancing-Tag Gewichte vorliegen
+            if date not in self.stock_weights.index:
+                continue
+
+            # Hole die Portfolio-Gewichte am Rebalancing-Stichtag
+            weights = self.stock_weights.loc[date].dropna()
+
+            # Entferne Aktien, die nicht in den Renditedaten vorkommen
+            weights = weights[weights.index.isin(returns.columns)]
+
+            # Wenn keine sinnvollen Gewichte vorhanden sind, überspringen
+            if weights.sum() == 0:
+                continue
+
+            # Skaliere die Gewichte so, dass sie sich auf 1 summieren
+            weights = weights / weights.sum()
+
+            # Definiere das Live-Fenster: 4 Wochen nach dem Rebalancing-Stichtag
+            period_start = date + pd.Timedelta(days=1)
+            period_end = month_ends[month_ends > date].iloc[0]
+
+            # Filtere wöchentliche Renditen im Live-Fenster
+            mask = (returns.index >= period_start) & (returns.index <= period_end)
+            period_returns = returns.loc[mask, weights.index]
+
+            # Berechne wöchentliche Portfolio-Renditen durch gewichtete Summe
+            perf = period_returns.dot(weights)
+
+            # Speichere die Ergebnisse im Rückgabe-DataFrame
+            portfolio_returns.loc[perf.index] = perf
+
+        self.df_portfolio_returns = pd.DataFrame(portfolio_returns['2007-01-31':], columns=['BT_RETURN'])
+        self.df_portfolio_returns['BT_CUM_RET'] = (1+self.df_portfolio_returns).cumprod()
+
+        # 5.  Calculate Backtest Performance measures
+        avg_return = self.df_portfolio_returns["BT_RETURN"].mean() * self.price_frequency_num
+        volatility = self.df_portfolio_returns["BT_RETURN"].std() * np.sqrt(self.price_frequency_num)
+        sharpe_ratio = avg_return / volatility
+        roll_max = self.df_portfolio_returns["BT_CUM_RET"].cummax()
+        drawdown = self.df_portfolio_returns["BT_CUM_RET"] / roll_max - 1
+        max_drawdown = drawdown.min()
+
+        self.bt_performance = pd.DataFrame({
+            "Average Return": [avg_return],
+            "Volatility": [volatility],
+            "Sharpe Ratio": [sharpe_ratio],
+            "Max Drawdown": [max_drawdown]
+        }, index=['BT_PERFORMANCE']).T
 
 
 if __name__ == '__main__':
-    frequency_ = 'W-FRI'
-    data = Data(frequency=frequency_, use_pickle_data=True)
-    ticker_mapping, stock_prices, index_weights = data.get_data()
+
+    # 0. Define Params
+    params_ = {
+        'price_frequency_str': 'D',
+        'use_pickle_data': True,
+        'price_frequency_num': 252,
+        'equal_weighted_stocks': True}
+
+    # 1. Load Data
+    data_instance = Data(params = params_)
+    data_instance.get_data()
+
+    # 2. Get Factored Weights
+    factors = Factors(data = data_instance, params = params_)
+    factors.get_factor_scores()
+    factors.get_factor_weight()
+    factors.get_stock_weights()
+
+    # 3. Run Backtest
+    backtest = Backtest(data = data_instance, factors = factors, params = params_)
+    backtest.run_backtest()
     pass
-    pass
-    pass
+
