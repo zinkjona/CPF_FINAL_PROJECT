@@ -1,10 +1,13 @@
 import pandas as pd
 import numpy as np
 import pickle
+from train_ml_model import train_model
 
 ticker_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ticker_data.pkl'
 stock_prices_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/stock_prices.pkl'
 index_weights_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/index_weights.pkl'
+ml_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ml_weights.pkl'
+
 
 class Data:
     def __init__(self, params: dict):
@@ -107,7 +110,7 @@ class Factors:
 
     def predict_factor_weights(self):
 
-        with open("ml_model.pkl", "rb") as f:
+        with open(ml_pickle_file_path, "rb") as f:
             model = pickle.load(f)
 
         weights = pd.DataFrame(index=self.mom_ranks.index, columns=['WEIGHT_MOM', 'WEIGHT_MIN_VOL'])
@@ -229,6 +232,7 @@ if __name__ == '__main__':
     # 2. Get Factored Weights
     factors = Factors(data = data_instance, params = params_)
     factors.get_factor_scores()
+    train_model(factors=factors, returns=data_instance.stock_prices.pct_change()) # wird nur aufgerufen und ergebnisse im pickle gespeichert
     factors.get_factor_weight()
     factors.get_stock_weights()
 

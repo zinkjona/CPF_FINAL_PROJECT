@@ -3,6 +3,9 @@ import numpy as np
 from tqdm import tqdm
 from sklearn.ensemble import RandomForestRegressor
 
+ml_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ml_weights.pkl'
+
+
 def train_model(factors, returns):
     X = []
     y = []
@@ -42,8 +45,8 @@ def train_model(factors, returns):
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X, y)
 
-    with open("ml_model.pkl", "wb") as f:
-        pickle.dump(model, f)
+    with open(ml_pickle_file_path, "wb") as file:
+        pickle.dump(model, file)
 
     print("ML-Modell gespeichert.")
 
