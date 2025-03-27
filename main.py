@@ -103,9 +103,26 @@ class Factors:
         self.vol_ranks = vol_ranks
 
     def get_factor_weight(self):
-        self.factor_weight = pd.DataFrame(index = self.stock_prices.index, columns = ['WEIGHT_MOM', 'WEIGHT_MIN_VOL'])
-        self.factor_weight['WEIGHT_MOM'] = 0.5
-        self.factor_weight['WEIGHT_MIN_VOL'] = 0.5
+        self.factor_weight = self.predict_factor_weights()
+
+    def predict_factor_weights(self):
+
+        with open("ml_model.pkl", "rb") as f:
+            model = pickle.load(f)
+
+        weights = pd.DataFrame(index=self.mom_ranks.index, columns=['WEIGHT_MOM', 'WEIGHT_MIN_VOL'])
+
+        for date in self.mom_ranks.index:
+            try:
+                mom = self.mom_ranks.loc[date]
+                vol = self.vol_ranks.loc[date]
+
+                features = np.array([[mom.mean(), mom.std(), vol.mean(), vol.std()]])
+                pred = model.predict(features)[0]
+                weights.loc[date] = [pred, 1 - pred]
+            except:
+                weights.loc[date] = [0.5, 0.5]  # Fallback
+        return weights
 
     def get_stock_weights(self):
 
