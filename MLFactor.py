@@ -1,13 +1,70 @@
 import pandas as pd
 import numpy as np
 import pickle
-from train_ml_model import train_model
+from tqdm import tqdm
+from sklearn.ensemble import RandomForestRegressor
+
 
 ticker_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ticker_data.pkl'
 stock_prices_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/stock_prices.pkl'
 index_weights_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/index_weights.pkl'
 ml_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ml_weights.pkl'
 
+def extract_features(mom, vol):
+    return [mom.mean(), mom.std(), vol.mean(), vol.std()]
+
+class MLModel:
+
+    def __init__(self, factors, data, params):
+        self.factors = factors
+        self.returns = data.returns
+        self.params = params
+
+    def train_model(self):
+        X = []
+        y = []
+        training_end_period = self.params['training_end_period']
+        month_ends = self.factors.mom_ranks.index.to_series().groupby(self.factors.mom_ranks.index.to_period("M")).last()
+        month_ends = month_ends[month_ends <= training_end_period]
+
+        weight_grid = np.round(np.linspace(0, 1, 11), 2)
+
+        for date in tqdm(month_ends[:-2]):
+            try:
+                mom = self.factors.mom_ranks.loc[date]
+                vol = self.factors.vol_ranks.loc[date]
+
+                # Features: einfache Statistik über die Faktorwerte
+                x_features = extract_features(mom, vol)
+
+                next_date = month_ends[month_ends > date].iloc[0]
+                next_mask = (self.returns.index > date) & (self.returns.index <= next_date)
+                next_returns = self.returns.loc[next_mask]
+
+                best_weight = 0.5
+                best_return = -np.inf
+
+                for w in weight_grid:
+                    combined_scores = mom * w + vol * (1 - w)
+                    combined_scores = combined_scores / combined_scores.sum()
+                    perf = next_returns[combined_scores.index].dot(combined_scores)
+                    cum_return = (1 + perf).prod()
+                    if cum_return > best_return:
+                        best_return = cum_return
+                        best_weight = w
+
+                X.append(x_features)
+                y.append(best_weight)
+            except:
+                continue
+
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        model.fit(X, y)
+
+        with open(ml_pickle_file_path, "wb") as file:
+            pickle.dump(model, file)
+
+        print("ML-Modell gespeichert.")
 
 class Data:
     def __init__(self, params: dict):
@@ -57,6 +114,7 @@ class Data:
                 pickle.dump(index_weights, file)
 
         self.stock_prices = stock_prices
+        self.returns = stock_prices.pct_change()
         self.index_weights = index_weights
 
 
@@ -67,6 +125,8 @@ class Factors:
         self.equal_weighted_stocks = params['equal_weighted_stocks']
         self.index_weights = data.index_weights
         self.stock_prices = data.stock_prices
+        self.returns = data.returns
+        self.live_begin_period = params['live_begin_period']
 
     def get_factor_scores(self):
         # 1. Momentum
@@ -87,7 +147,7 @@ class Factors:
 
         # 2. Low-Volatility
         # 2. 1. Calculate Standard Deviation
-        vol_12m = self.stock_prices.pct_change().rolling(self.price_frequency_num).std() * np.sqrt(self.price_frequency_num)
+        vol_12m = self.returns.rolling(self.price_frequency_num).std() * np.sqrt(self.price_frequency_num)
 
         # 2. 2. Calculate Low-Volatility Ranks
         vol_ranks = pd.DataFrame(index=vol_12m.index, columns=vol_12m.columns)
@@ -115,12 +175,15 @@ class Factors:
 
         weights = pd.DataFrame(index=self.mom_ranks.index, columns=['WEIGHT_MOM', 'WEIGHT_MIN_VOL'])
 
-        for date in self.mom_ranks.index:
+        relevant_dates = self.mom_ranks.index[self.mom_ranks.index >= self.live_begin_period]
+
+        for date in relevant_dates:
             try:
                 mom = self.mom_ranks.loc[date]
                 vol = self.vol_ranks.loc[date]
 
-                features = np.array([[mom.mean(), mom.std(), vol.mean(), vol.std()]])
+                x_features = extract_features(mom, vol)
+                features = np.array([x_features])
                 pred = model.predict(features)[0]
                 weights.loc[date] = [pred, 1 - pred]
             except:
@@ -154,14 +217,16 @@ class Backtest:
 
     def __init__(self, data: Data, factors: Factors, params: dict):
         self.price_frequency_num = params['price_frequency_num']
-        self.stock_prices = data.stock_prices
+        self.returns = data.returns
         self.stock_weights = factors.stock_weights
+        self.live_begin_period = params['live_begin_period']
 
     def run_backtest(self):
-        returns = self.stock_prices.pct_change()
+        returns = self.returns.copy(deep=True)
         returns.index = pd.to_datetime(returns.index)
 
         month_ends = self.stock_weights.index.to_series().groupby(self.stock_weights.index.to_period("M")).last()
+        month_ends = month_ends[month_ends >= self.live_begin_period]
         portfolio_returns = pd.Series(index=returns.index, dtype=float)
 
         for date in month_ends[:-1]:
@@ -197,7 +262,7 @@ class Backtest:
             # Speichere die Ergebnisse im Rückgabe-DataFrame
             portfolio_returns.loc[perf.index] = perf
 
-        self.df_portfolio_returns = pd.DataFrame(portfolio_returns['2007-01-31':], columns=['BT_RETURN'])
+        self.df_portfolio_returns = pd.DataFrame(portfolio_returns[self.live_begin_period:], columns=['BT_RETURN'])
         self.df_portfolio_returns['BT_CUM_RET'] = (1+self.df_portfolio_returns).cumprod()
 
         # 5.  Calculate Backtest Performance measures
@@ -223,7 +288,9 @@ if __name__ == '__main__':
         'price_frequency_str': 'D',
         'use_pickle_data': True,
         'price_frequency_num': 252,
-        'equal_weighted_stocks': True}
+        'equal_weighted_stocks': True,
+        'training_end_period' : pd.Timestamp('2099-12-31'),
+        'live_begin_period' : pd.Timestamp('2004-01-01')}
 
     # 1. Load Data
     data_instance = Data(params = params_)
@@ -232,7 +299,8 @@ if __name__ == '__main__':
     # 2. Get Factored Weights
     factors = Factors(data = data_instance, params = params_)
     factors.get_factor_scores()
-    train_model(factors=factors, returns=data_instance.stock_prices.pct_change()) # wird nur aufgerufen und ergebnisse im pickle gespeichert
+    ml_model = MLModel(factors=factors, data = data_instance, params=params_)
+    ml_model.train_model()
     factors.get_factor_weight()
     factors.get_stock_weights()
 
