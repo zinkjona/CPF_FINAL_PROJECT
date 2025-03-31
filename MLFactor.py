@@ -147,8 +147,8 @@ class Data:
                 pickle.dump(index_weights, file)
 
         # self.stock_prices = stock_prices.loc[stock_prices.index.year >= 2018]
-        self.stock_prices = stock_prices
-        self.returns = self.stock_prices.pct_change(fill_method='pad')
+        self.stock_prices = stock_prices.ffill()
+        self.returns = self.stock_prices.pct_change(fill_method=None)
         self.index_weights = index_weights
 
         print("Data geladen.")
@@ -164,7 +164,7 @@ class Factors:
         self.live_begin_period = params['live_begin_period']
 
     def get_factor_scores(self):
-        print("Factor Scores werden geladen...")
+        print("Factor Ränge werden berechnet...")
         # 1.1 Raw Factor Scores
         perf_12m = self.stock_prices / self.stock_prices.shift(self.price_frequency_num) - 1
         vol_12m = self.returns.rolling(self.price_frequency_num).std() * np.sqrt(self.price_frequency_num)
@@ -196,11 +196,11 @@ class Factors:
         self.mom_ranks = momentum_ranks
         self.vol_ranks = vol_ranks
 
-        print("Factor Scores geladen.")
+        print("Factor Ränge berechnet.")
 
 
     def get_factor_weight(self):
-        print("Apply ML factor model to get factor weight...")
+        print("ML factor model wird angewendet, um Gewichte zu erhalten...")
         # Calculate Factor Weight from ML Model
 
         with open(ml_pickle_file_path, "rb") as f:
@@ -231,15 +231,32 @@ class Factors:
         self.factor_weight_av =  self.factor_weight.copy(deep=True)
         self.factor_weight_av['WEIGHT_MOM'] = self.factor_weight_av['WEIGHT_MOM'].where(self.factor_weight_av['WEIGHT_MOM'].isna(), self.factor_weight_av['WEIGHT_MOM'].mean())
         self.factor_weight_av['WEIGHT_MIN_VOL'] = self.factor_weight_av['WEIGHT_MIN_VOL'].where(self.factor_weight_av['WEIGHT_MIN_VOL'].isna(), 1 - self.factor_weight_av['WEIGHT_MOM'].mean())
-        print("Factor Weight geladen.")
+
+        # Summary
+        summary = {}
+
+        for name, df in {
+            'ML': self.factor_weight,
+            '5050': self.factor_weight_5050,
+            'AVG_ML': self.factor_weight_av
+        }.items():
+            summary[name] = {
+                'Avg_WEIGHT_MOM': df['WEIGHT_MOM'].mean(),
+                'Avg_WEIGHT_MIN_VOL': df['WEIGHT_MIN_VOL'].mean(),
+                'Count_Observations': df[['WEIGHT_MOM', 'WEIGHT_MIN_VOL']].notna().all(axis=1).sum()
+            }
+
+        self.df_weight_summary = pd.DataFrame(summary).T
+
+        print("ML Factor angewendet.")
 
     def get_stock_weights(self):
-        print("Stock Weights werden geladen...")
+        print("Stock Weights werden aus Faktogewichten berechnet...")
         # Get Stock weights from factors weights by multiplying ranks with factor weights and rescaling
         self.stock_weights_ml = compute_stock_weights(self.mom_ranks, self.vol_ranks, self.factor_weight)
         self.stock_weights_5050 = compute_stock_weights(self.mom_ranks, self.vol_ranks, self.factor_weight_5050)
         self.stock_weights_ml_av = compute_stock_weights(self.mom_ranks, self.vol_ranks, self.factor_weight_av)
-        print("Stock Weights geladen.")
+        print("Stock Weights berechnet.")
 
 
 class Backtest:
