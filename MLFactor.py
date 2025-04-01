@@ -1,17 +1,64 @@
+# Conduct importance analysis
+# Add interest rates to ML Model
+
+# Verschiedene features testen
+# Verschiedene ML Modelle testen
+
 import pandas as pd
 import numpy as np
 import pickle
 from tqdm import tqdm
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.feature_selection import f_regression
+import seaborn as sns
+import matplotlib.pyplot as plt
+from scipy.stats import skew, kurtosis
+from blp import blp
+bquery = blp.BlpQuery(parser=blp.BlpParser(raise_security_errors=False)).start()
+
 
 
 ticker_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ticker_data.pkl'
 stock_prices_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/stock_prices.pkl'
 index_weights_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/index_weights.pkl'
 ml_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ml_weights.pkl'
+rf_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/rf.pkl'
+vix_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/vix.pkl'
 
-def extract_features(mom, vol):
-    return [mom.std(), vol.std(), mom.corr(vol)]
+def extract_features(mom, vol, rf, vix):
+    features = {
+        'momentum_mean': {
+        'value': mom.mean(),
+        'label': 'mean_mom'
+        },
+        'volatility_mean': {
+            'value': vol.mean(),
+            'label': 'mean_vol'
+        },
+        'momentum_std': {
+            'value': mom.std(),
+            'label': 'std_mom'
+        },
+        'volatility_std': {
+            'value': vol.std(),
+            'label': 'std_vol'
+        },
+        'mom_vol_corr': {
+            'value': mom.corr(vol),
+            'label': 'corr_mom_vol'
+        },
+        'rf': {
+            'value': rf.iloc[0]/100,
+            'label': 'rf'
+        },
+        'vix': {
+            'value': vix.iloc[0]/100,
+            'label': 'vix'
+        }
+    }
+
+    df = pd.DataFrame.from_dict(features, orient='index')
+    return df
 
 
 def compute_stock_weights(mom_ranks, vol_ranks, factor_weights):
@@ -28,20 +75,32 @@ def compute_stock_weights(mom_ranks, vol_ranks, factor_weights):
     stock_weights.index = pd.to_datetime(stock_weights.index)
     return stock_weights.copy(deep=True)
 
+
+class Params:
+    def __init__(self):
+        self.price_frequency_str = 'D'
+        self.use_pickle_data = True
+        self.price_frequency_num = 252
+        self.training_end_period = pd.Timestamp('2099-12-31')
+        self.live_begin_period = pd.Timestamp('2004-01-01')
+        self.recalibrate_ML_model = True
+
 class MLModel:
 
     def __init__(self, factors, data, params):
         self.factors = factors
         self.returns = data.returns
-        self.params = params
-        self.recalibrate_ml_model = params['recalibrate_ML_model']
+        self.rf = data.rf
+        self.vix = data.vix
+        self.recalibrate_ml_model = params.recalibrate_ML_model
+        self.training_end_period = params.training_end_period
 
     def train_model(self):
         print("Model wird trainiert...")
         if self.recalibrate_ml_model:
             X = []
             y = []
-            training_end_period = self.params['training_end_period']
+            training_end_period = self.training_end_period
             month_ends = self.factors.mom_ranks.index.to_series().groupby(self.factors.mom_ranks.index.to_period("M")).last()
             month_ends = month_ends[month_ends <= training_end_period]
 
@@ -49,9 +108,11 @@ class MLModel:
 
             for date in tqdm(month_ends[:-2]):
                 try:
-                    mom = self.factors.mom_ranks.loc[date]
-                    vol = self.factors.vol_ranks.loc[date]
+                    mom = self.factors.perf_12m.loc[date]
+                    vol = self.factors.vol_12m.loc[date]
                     valid_assets = mom.dropna().index.intersection(vol.dropna().index)
+                    rf = self.rf.loc[date]
+                    vix = self.vix.loc[date]
 
                     next_date = month_ends[month_ends > date].iloc[0]
                     next_mask = (self.returns.index > date) & (self.returns.index <= next_date)
@@ -68,7 +129,8 @@ class MLModel:
                     next_returns = next_returns[valid_assets]
 
                     # Features: einfache Statistik über die Faktorwerte
-                    x_features = extract_features(mom, vol)
+                    x_features = extract_features(mom, vol, rf, vix)
+                    features = x_features['value'].to_numpy()
 
                     best_weight = 0.5
                     best_return = -np.inf
@@ -82,7 +144,7 @@ class MLModel:
                             best_return = cum_return
                             best_weight = w
 
-                    X.append(x_features)
+                    X.append(features)
                     y.append(best_weight)
                 except:
                     continue
@@ -90,6 +152,26 @@ class MLModel:
             model = RandomForestRegressor(n_estimators=100, random_state=42)
             model.fit(X, y)
 
+            # Importance Analysis
+            importances = model.feature_importances_
+            self.df_importance = pd.DataFrame(importances, index=x_features['label'].to_list(), columns=["Importance"])
+
+            # Feature Scores
+            f_scores, p_values = f_regression(X, np.array(y))
+            self.feature_stats = pd.DataFrame({
+                'F-Score': pd.Series(f_scores, index=x_features['label'].to_list()),
+                'p-Value': pd.Series(p_values, index=x_features['label'].to_list())
+            })
+
+            # Zusammenhang visualisieren
+            X_df = pd.DataFrame(X, columns=x_features['label'].to_list())
+            y_series = pd.Series(y, name="target")
+            df = X_df.copy()
+            df["target"] = y_series
+            sns.pairplot(df)
+            # plt.show()
+
+            # In Pickle abspeichern
             with open(ml_pickle_file_path, "wb") as file:
                 pickle.dump(model, file)
 
@@ -99,9 +181,9 @@ class MLModel:
         print("Model trainiert.")
 
 class Data:
-    def __init__(self, params: dict):
-        self.price_frequency_str = params['price_frequency_str']
-        self.use_pickle_data = params['use_pickle_data']
+    def __init__(self, params: Params):
+        self.price_frequency_str = params.price_frequency_str
+        self.use_pickle_data = params.use_pickle_data
 
     def get_data(self):
         print("Data wird geladen...")
@@ -113,6 +195,13 @@ class Data:
 
             with open(index_weights_pickle_file_path, 'rb') as file:
                 index_weights = pickle.load(file)
+
+            with open(rf_pickle_file_path, 'rb') as file:
+                df_rf = pickle.load(file)
+
+            with open(vix_pickle_file_path, 'rb') as file:
+                df_vix = pickle.load(file)
+
         else:
             # 1. Ticker Mapping
             ticker_mapping = pd.read_excel(
@@ -146,22 +235,67 @@ class Data:
             with open(index_weights_pickle_file_path, 'wb') as file:
                 pickle.dump(index_weights, file)
 
+
+            # 4. Risk free rate
+            df_bbg = bquery.bdh(securities=['USGG10YR Index'],
+                                         fields=['PX_LAST'],
+                                         start_date=stock_prices.index.min().strftime('%Y%m%d'),
+                                         end_date=stock_prices.index.max().strftime('%Y%m%d'),
+                                         options=[("currency", 'USD'), ("periodicitySelection", "DAILY"),
+                                               ("nonTradingDayFillOption", "NON_TRADING_WEEKDAYS"),
+                                               ("nonTradingDayFillMethod", "PREVIOUS_VALUE"),
+                                               ("periodicityAdjustment", "CALENDAR")])
+            df_bbg = df_bbg.pivot(index='date', columns='security',
+                                                    values='PX_LAST').bfill().ffill()
+            df_bbg.columns.name = None
+            df_bbg.index.name = 'Date'
+            df_bbg.columns = ['RF']
+
+            df_rf = df_bbg.copy(deep=True)
+
+
+
+            # 5.VIX Index
+            df_bbg = bquery.bdh(securities=['VIX Index'],
+                                         fields=['PX_LAST'],
+                                         start_date=stock_prices.index.min().strftime('%Y%m%d'),
+                                         end_date=stock_prices.index.max().strftime('%Y%m%d'),
+                                         options=[("currency", 'USD'), ("periodicitySelection", "DAILY"),
+                                               ("nonTradingDayFillOption", "NON_TRADING_WEEKDAYS"),
+                                               ("nonTradingDayFillMethod", "PREVIOUS_VALUE"),
+                                               ("periodicityAdjustment", "CALENDAR")])
+            df_bbg = df_bbg.pivot(index='date', columns='security',
+                                                    values='PX_LAST').bfill().ffill()
+            df_bbg.columns.name = None
+            df_bbg.index.name = 'Date'
+            df_bbg.columns = ['VIX']
+
+            df_vix = df_bbg.copy(deep=True)
+
+            with open(vix_pickle_file_path, 'wb') as file:
+                pickle.dump(df_vix, file)
+
+
         # self.stock_prices = stock_prices.loc[stock_prices.index.year >= 2018]
         self.stock_prices = stock_prices.ffill()
         self.returns = self.stock_prices.pct_change(fill_method=None)
         self.index_weights = index_weights
+        self.rf = df_rf.copy(deep=True)
+        self.vix = df_vix.copy(deep=True)
 
         print("Data geladen.")
 
 
 class Factors:
 
-    def __init__(self, data: Data, params: dict):
-        self.price_frequency_num = params['price_frequency_num']
+    def __init__(self, data: Data, params: Params):
+        self.price_frequency_num = params.price_frequency_num
         self.index_weights = data.index_weights
         self.stock_prices = data.stock_prices
+        self.rf = data.rf
+        self.vix = data.vix
         self.returns = data.returns
-        self.live_begin_period = params['live_begin_period']
+        self.live_begin_period = params.live_begin_period
 
     def get_factor_scores(self):
         print("Factor Ränge werden berechnet...")
@@ -174,7 +308,7 @@ class Factors:
         vol_ranks = pd.DataFrame(index=vol_12m.index, columns=vol_12m.columns)
 
         # 1.3 fill dataframes
-        for date in vol_12m.index:
+        for date in tqdm(vol_12m.index):
             row_mom = perf_12m.loc[date]
             row_vol = vol_12m.loc[date]
             try:
@@ -190,11 +324,11 @@ class Factors:
                 momentum_ranks.loc[date] = np.nan
                 vol_ranks.loc[date] = np.nan
 
-        momentum_ranks.dropna(how='all', inplace=True)
-        vol_ranks.dropna(how='all', inplace=True)
+        self.mom_ranks = momentum_ranks.dropna(how='all')
+        self.vol_ranks = vol_ranks.dropna(how='all')
 
-        self.mom_ranks = momentum_ranks
-        self.vol_ranks = vol_ranks
+        self.perf_12m = perf_12m.dropna(how='all')
+        self.vol_12m = vol_12m.dropna(how='all')
 
         print("Factor Ränge berechnet.")
 
@@ -209,13 +343,15 @@ class Factors:
         weights = pd.DataFrame(index=self.mom_ranks.index, columns=['WEIGHT_MOM', 'WEIGHT_MIN_VOL'])
         relevant_dates = self.mom_ranks.index[self.mom_ranks.index >= self.live_begin_period]
 
-        for date in relevant_dates:
+        for date in tqdm(relevant_dates):
             try:
-                mom = self.mom_ranks.loc[date].dropna()
-                vol = self.vol_ranks.loc[date].dropna()
+                mom = self.perf_12m.loc[date].dropna()
+                vol = self.vol_12m.loc[date].dropna()
+                rf = self.rf.loc[date]
+                vix = self.vix.loc[date]
 
-                x_features = extract_features(mom, vol)
-                features = np.array([x_features])
+                x_features = extract_features(mom, vol, rf, vix)
+                features = np.array([x_features['value']])
                 pred = model.predict(features)[0]
                 weights.loc[date] = [pred, 1 - pred]
             except:
@@ -261,10 +397,10 @@ class Factors:
 
 class Backtest:
 
-    def __init__(self, data: Data, factors: Factors, params: dict):
-        self.price_frequency_num = params['price_frequency_num']
+    def __init__(self, data: Data, factors: Factors, params: Params):
+        self.price_frequency_num = params.price_frequency_num
         self.returns = data.returns
-        self.live_begin_period = params['live_begin_period']
+        self.live_begin_period = params.live_begin_period
 
         self.stock_weights_ml = factors.stock_weights_ml
         self.stock_weights_5050 = factors.stock_weights_5050
@@ -287,7 +423,7 @@ class Backtest:
         month_ends = strategies['ML'].index.to_series().groupby(strategies['ML'].index.to_period("M")).last()
         month_ends = month_ends[month_ends >= self.live_begin_period]
 
-        for date in month_ends[:-1]:
+        for date in tqdm(month_ends[:-1]):
             print(date)
             # Bestimme das Rebalancing-Fenster
             period_start = date + pd.Timedelta(days=1)
@@ -348,13 +484,7 @@ class Backtest:
 if __name__ == '__main__':
 
     # 0. Define Params
-    params_ = {
-        'price_frequency_str': 'D',
-        'use_pickle_data': True,
-        'price_frequency_num': 252,
-        'training_end_period' : pd.Timestamp('2099-12-31'),
-        'live_begin_period' : pd.Timestamp('2004-01-01'),
-        'recalibrate_ML_model' : False}
+    params_ = Params()
 
     # 1. Load Data
     data_instance = Data(params = params_)
@@ -371,5 +501,12 @@ if __name__ == '__main__':
     # 3. Run Backtest
     backtest = Backtest(data = data_instance, factors = factors, params = params_)
     backtest.run_backtest()
-    pass
+
+    # 4. Save results
+    results = {
+        'factors': factors,
+        'ml_model': ml_model,
+        'backtest': backtest,
+        'data': data_instance
+    }
 
