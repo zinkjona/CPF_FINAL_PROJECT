@@ -11,12 +11,11 @@ from tqdm import tqdm
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.feature_selection import f_regression
 import seaborn as sns
-import matplotlib.pyplot as plt
-from scipy.stats import skew, kurtosis
 from blp import blp
 bquery = blp.BlpQuery(parser=blp.BlpParser(raise_security_errors=False)).start()
-
-
+import subprocess
+import os
+from datetime import datetime
 
 ticker_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ticker_data.pkl'
 stock_prices_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/stock_prices.pkl'
@@ -24,6 +23,31 @@ index_weights_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final 
 ml_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ml_weights.pkl'
 rf_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/rf.pkl'
 vix_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/vix.pkl'
+notebook_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/CPF Final Project/Final Project Results.ipynb'
+html_output_dir = 'G:/TEC101/ALLE/Zink/40_CPF Program/Final Project Output/'
+
+def export_notebook_to_html():
+    """
+    Exportiert ein fest definiertes Notebook zu HTML mit Zeitstempel.
+    """
+    if not os.path.isfile(notebook_path):
+        raise FileNotFoundError(f"❌ Notebook nicht gefunden: {notebook_path}")
+
+    notebook_name = os.path.splitext(os.path.basename(notebook_path))[0]
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    output_filename = f"{notebook_name}_{timestamp}.html"
+
+    command = [
+        "jupyter", "nbconvert",
+        "--to", "html",
+        "--output", output_filename,
+        "--output-dir", html_output_dir,
+        notebook_path
+    ]
+
+    print("🚀 Exportiere Notebook nach HTML...")
+    subprocess.run(command, check=True)
+    print(f"✅ Export erfolgreich: {os.path.join(html_output_dir, output_filename)}")
 
 def extract_features(mom, vol, rf, vix):
     features = {
@@ -184,6 +208,7 @@ class Data:
     def __init__(self, params: Params):
         self.price_frequency_str = params.price_frequency_str
         self.use_pickle_data = params.use_pickle_data
+        self.price_frequency_num = params.price_frequency_num
 
     def get_data(self):
         print("Data wird geladen...")
@@ -277,13 +302,50 @@ class Data:
 
 
         # self.stock_prices = stock_prices.loc[stock_prices.index.year >= 2018]
-        self.stock_prices = stock_prices.ffill()
+        self.stock_prices = stock_prices
         self.returns = self.stock_prices.pct_change(fill_method=None)
         self.index_weights = index_weights
         self.rf = df_rf.copy(deep=True)
         self.vix = df_vix.copy(deep=True)
 
         print("Data geladen.")
+
+    def get_descriptive_stats(self):
+        """
+        Erzeugt ein Dictionary mit wichtigen Statistiken über den Returns-Datensatz.
+        """
+        returns = self.returns.dropna(how='all', axis=1)
+
+        # Basisinformationen
+        basic_info = {
+            "start_date": returns.index.min(),
+            "end_date": returns.index.max(),
+            "num_days": returns.shape[0],
+            "num_assets": returns.shape[1],
+        }
+
+        # Verfügbarkeit
+        missing = returns.isna().sum()
+        missing_percent = missing / len(returns) * 100
+        availability_stats = {
+            "min_missing_pct": missing_percent.min(),
+            "mean_missing_pct": missing_percent.mean(),
+            "max_missing_pct": missing_percent.max(),
+            "num_fully_available_assets": (missing == 0).sum()
+        }
+
+        # Renditestatistik
+        stats = returns.describe().T[["mean", "std", "min", "max"]]
+        stats["mean"] *= self.price_frequency_num
+        stats["std"] *= np.sqrt(self.price_frequency_num)
+
+        # Save alles in Dictionary
+        self.descriptive_stats = {
+            "basic_info": basic_info,
+            "availability_stats": availability_stats,
+            "return_stats": stats,
+            "daily_availability": self.stock_prices.notna().sum(axis=1)
+        }
 
 
 class Factors:
@@ -424,7 +486,7 @@ class Backtest:
         month_ends = month_ends[month_ends >= self.live_begin_period]
 
         for date in tqdm(month_ends[:-1]):
-            print(date)
+            # print(date)
             # Bestimme das Rebalancing-Fenster
             period_start = date + pd.Timedelta(days=1)
             period_end = month_ends[month_ends > date].iloc[0]
@@ -482,6 +544,7 @@ class Backtest:
 
 
 if __name__ == '__main__':
+    export_notebook_to_html()
 
     # 0. Define Params
     params_ = Params()
@@ -489,6 +552,7 @@ if __name__ == '__main__':
     # 1. Load Data
     data_instance = Data(params = params_)
     data_instance.get_data()
+    data_instance.get_descriptive_stats()
 
     # 2. Get Factored Weights
     factors = Factors(data = data_instance, params = params_)
@@ -501,12 +565,4 @@ if __name__ == '__main__':
     # 3. Run Backtest
     backtest = Backtest(data = data_instance, factors = factors, params = params_)
     backtest.run_backtest()
-
-    # 4. Save results
-    results = {
-        'factors': factors,
-        'ml_model': ml_model,
-        'backtest': backtest,
-        'data': data_instance
-    }
 
