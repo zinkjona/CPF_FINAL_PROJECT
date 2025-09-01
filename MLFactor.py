@@ -1,4 +1,4 @@
-# TODO: continue with get_stock_weights()
+# TODO: continue with Backtest
 
 # Conduct importance analysis
 # Add interest rates to ML Model
@@ -107,7 +107,7 @@ def extract_features(mom, vol, roe, rf, vix):
     return df
 
 
-def compute_stock_weights(mom_ranks, vol_ranks, factor_weights):
+def compute_stock_weights(factor_1_ranks, factor_2_ranks, factor_weights):
     # Get Stock weights from factors weights by multiplying ranks with factor weights and rescaling
 
     """
@@ -115,7 +115,7 @@ def compute_stock_weights(mom_ranks, vol_ranks, factor_weights):
     kombiniert und normalisiert werden.
     """
     # Kombiniere die Faktor-Ranks mit den entsprechenden Gewichtungen
-    factors_weighted = mom_ranks.mul(factor_weights['WEIGHT_MOM'], axis=0) + vol_ranks.mul(factor_weights['WEIGHT_MIN_VOL'], axis=0)
+    factors_weighted = factor_1_ranks.mul(factor_weights['WEIGHT_FACTOR_1'], axis=0) + factor_2_ranks.mul(factor_weights['WEIGHT_FACTOR_2'], axis=0)
     row_sums = factors_weighted.sum(axis=1).replace(0, np.nan)
     stock_weights = factors_weighted.div(row_sums, axis=0)
     stock_weights.index = pd.to_datetime(stock_weights.index)
@@ -433,6 +433,7 @@ class Factors:
         self.returns = data.returns
         self.live_begin_period = params.live_begin_period
         self.update_factor_scores = params.update_factor_scores
+        self.relevant_factors = params.relevant_factors
 
     def get_factor_scores(self):
         print("Factor Ränge werden berechnet...")
@@ -561,10 +562,11 @@ class Factors:
 
     def get_stock_weights(self):
         print("Stock Weights werden aus Faktogewichten berechnet...")
+        factor_ranks = {f: getattr(self, f"{f}_ranks") for f in self.relevant_factors}
         # Get Stock weights from factors weights by multiplying ranks with factor weights and rescaling
-        self.stock_weights_ml = compute_stock_weights(self.mom_ranks, self.vol_ranks, self.factor_weight)
-        self.stock_weights_5050 = compute_stock_weights(self.mom_ranks, self.vol_ranks, self.factor_weight_5050)
-        self.stock_weights_ml_av = compute_stock_weights(self.mom_ranks, self.vol_ranks, self.factor_weight_av)
+        self.stock_weights_ml = compute_stock_weights(factor_ranks[self.relevant_factors[0]], factor_ranks[self.relevant_factors[1]], self.factor_weight)
+        self.stock_weights_5050 = compute_stock_weights(factor_ranks[self.relevant_factors[0]], factor_ranks[self.relevant_factors[1]], self.factor_weight_5050)
+        self.stock_weights_ml_av = compute_stock_weights(factor_ranks[self.relevant_factors[0]], factor_ranks[self.relevant_factors[1]], self.factor_weight_av)
         print("Stock Weights berechnet.")
 
 
