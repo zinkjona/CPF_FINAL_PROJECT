@@ -120,9 +120,9 @@ def extract_features(mom, vol, roe, rf, vix, past_30d_return, current_index_weig
 
 class Params:
     def __init__(self):
-        self.use_pickle_data = False
-        self.update_factor_scores = True
-        self.recalibrate_ML_model = True
+        self.use_pickle_data = True
+        self.update_factor_scores = False
+        self.recalibrate_ML_model = False
 
         self.price_frequency_str = 'D'
         self.price_frequency_num = 252
