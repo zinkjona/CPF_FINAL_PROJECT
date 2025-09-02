@@ -1,24 +1,20 @@
-# TODO: continue with Backtest
-
-# Conduct importance analysis
-# Add interest rates to ML Model
-
-# Verschiedene features testen
-# Verschiedene ML Modelle testen
-
 import pandas as pd
 import numpy as np
-import pickle
-from tqdm import tqdm
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.feature_selection import f_regression
 import seaborn as sns
-from blp import blp
-bquery = blp.BlpQuery(parser=blp.BlpParser(raise_security_errors=False)).start()
+import pickle
 import subprocess
 import os
+
+from tqdm import tqdm
+from blp import blp
 from datetime import datetime
-pd.set_option('future.no_silent_downcasting', True)
+from matplotlib import pyplot as plt
+
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.feature_selection import f_regression
+
+bquery = blp.BlpQuery(parser=blp.BlpParser(raise_security_errors=False)).start()
+
 
 ticker_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ticker_data.pkl'
 stock_prices_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/stock_prices.pkl'
@@ -30,7 +26,6 @@ vix_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/vi
 notebook_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/CPF Final Project/Final Project Results.ipynb'
 html_output_dir = 'G:/TEC101/ALLE/Zink/40_CPF Program/Final Project Output/'
 factor_scores_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/factor_scores.pkl'
-
 
 def export_notebook_to_html():
     """
@@ -55,23 +50,38 @@ def export_notebook_to_html():
     subprocess.run(command, check=True)
     print(f"✅ Export erfolgreich: {os.path.join(html_output_dir, output_filename)}")
 
-def standardize(series):
-    return series
-    # return (series - series.mean()) / series.std()
+def extract_features(mom, vol, roe, rf, vix, past_30d_return, current_index_weights):
+    past_index_return_ts = (past_30d_return * current_index_weights).sum(axis=1)
+    past_index_return = (1 + past_index_return_ts).cumprod().iloc[-1] - 1
+    past_index_vola = past_index_return_ts.std() * np.sqrt(252)
 
-def extract_features(mom, vol, roe, rf, vix):
+    momentum_weights = pd.qcut(mom, q=5, labels=[1, 2, 3, 4, 5]).astype(int) * current_index_weights
+    momentum_weights = momentum_weights / momentum_weights.sum()
+    mom_return_ts = (momentum_weights * past_30d_return).sum(axis=1)
+    mom_return = (1 + mom_return_ts).cumprod().iloc[-1] - 1
+
+    vol_weights = pd.qcut(vol, q=5, labels=[5, 4, 3, 2, 1]).astype(int) * current_index_weights
+    vol_weights = vol_weights / vol_weights.sum()
+    vol_return_ts = (vol_weights * past_30d_return).sum(axis=1)
+    vol_return = (1 + vol_return_ts).cumprod().iloc[-1] - 1
+
+    roe_weights = pd.qcut(roe, q=5, labels=[1, 2, 3, 4, 5]).astype(int) * current_index_weights
+    roe_weights = roe_weights / roe_weights.sum()
+    roe_return_ts = (roe_weights * past_30d_return).sum(axis=1)
+    roe_return = (1 + roe_return_ts).cumprod().iloc[-1] - 1
+
     features = {
-        'momentum_mean': {
-        'value': mom.mean(),
-        'label': 'mean_mom'
+        'past_mom_return': {
+            'value': mom_return,
+            'label': 'past_mom_return'
         },
-        'volatility_mean': {
-            'value': vol.mean(),
-            'label': 'mean_vol'
+        'past_vol_return': {
+            'value': vol_return,
+            'label': 'past_vol_return'
         },
-        'roe_mean': {
-            'value': roe.mean(),
-            'label': 'mean_roe'
+        'past_roe_return': {
+            'value': roe_return,
+            'label': 'past_roe_return'
         },
         'momentum_std': {
             'value': mom.std(),
@@ -100,6 +110,14 @@ def extract_features(mom, vol, roe, rf, vix):
         'vix': {
             'value': vix.iloc[0]/100,
             'label': 'vix'
+        },
+        'past_index_return': {
+            'value': past_index_return,
+            'label': 'past_index_return'
+        },
+        'past_index_vola': {
+            'value': past_index_vola,
+            'label': 'past_index_vola'
         }
     }
 
@@ -107,20 +125,17 @@ def extract_features(mom, vol, roe, rf, vix):
     return df
 
 
-
-
-
 class Params:
     def __init__(self):
         self.use_pickle_data = True
         self.update_factor_scores = False
-        self.recalibrate_ML_model = False
+        self.recalibrate_ML_model = True
 
         self.price_frequency_str = 'D'
         self.price_frequency_num = 252
-        self.training_end_period = pd.Timestamp('2010-12-31')
-        self.live_begin_period = pd.Timestamp('2011-01-01')
-        self.ml_training_factors = ['mean_mom', 'mean_roe',  'corr_mom_roe', 'rf', 'vix']
+        self.training_end_period = pd.Timestamp('2015-12-31')
+        self.live_begin_period = pd.Timestamp('2016-01-01')
+        self.ml_training_factors = ['mom_roe_corr', 'past_mom_return', 'past_roe_return',  'past_index_return', 'past_index_vola', 'rf', 'vix']
         self.relevant_factors = ['mom', 'roe']
 
 class MLModel:
@@ -146,7 +161,7 @@ class MLModel:
             month_ends = month_ends[month_ends <= training_end_period]
 
             weight_grid = np.round(np.linspace(0, 1, 11), 2)
-
+            x_features = pd.DataFrame()
             for date in tqdm(month_ends[:-2]):
                 try:
                     # Rendite Daten
@@ -164,9 +179,9 @@ class MLModel:
                         continue
 
                     # Zu standardisierende Variablen
-                    mom = standardize(self.factors.perf_12m.loc[date].loc[valid_assets])
-                    vol = standardize(self.factors.vol_12m.loc[date].loc[valid_assets])
-                    roe = standardize(self.factors.roe_12m.loc[date].loc[valid_assets])
+                    mom = self.factors.perf_12m.loc[date].loc[valid_assets]
+                    vol = self.factors.vol_12m.loc[date].loc[valid_assets]
+                    roe = self.factors.roe_12m.loc[date].loc[valid_assets]
 
                     # Nicht-zu-standardisierende Variablen
                     rf = self.rf.loc[date]
@@ -175,8 +190,11 @@ class MLModel:
                     vol_ranks = self.factors.vol_ranks.loc[date].loc[valid_assets]
                     roe_ranks = self.factors.roe_ranks.loc[date].loc[valid_assets]
 
+                    past_30d_returns = self.returns.loc[self.returns.index < date].tail(30)[valid_assets]
+                    current_index_weights = self.data.index_weights.loc[date].loc[valid_assets]
+
                     # Features: einfache Statistik über die Faktorwerte
-                    x_features_full = extract_features(mom, vol, roe, rf, vix)
+                    x_features_full = extract_features(mom, vol, roe, rf, vix, past_30d_returns, current_index_weights)
                     x_features = x_features_full[x_features_full['label'].isin(self.ml_training_factors)]
                     features = x_features['value'].to_numpy()
 
@@ -192,7 +210,7 @@ class MLModel:
                         combined_score = score_df.dot([w, 1-w])
                         combined_score = combined_score.reindex(next_returns.columns)
                         scored_weights = combined_score / combined_score.sum()
-                        perf = next_returns.dot(scored_weights.fillna(0))
+                        perf = next_returns.dot(scored_weights.infer_objects(copy=False).fillna(0))
                         cum_return = (1 + perf).prod()
                         if cum_return > best_return:
                             best_return = cum_return
@@ -422,6 +440,7 @@ class Factors:
     def get_factor_scores(self):
         print("Factor Ränge werden berechnet...")
 
+        factor_scores = {}
         if self.update_factor_scores:
             # 1.1 Raw Factor Scores
             perf_12m = self.stock_prices / self.stock_prices.shift(self.price_frequency_num) - 1
@@ -498,13 +517,16 @@ class Factors:
 
         for date in tqdm(self.mom_ranks.index):
             try:
-                mom = standardize(self.perf_12m.loc[date].dropna())
-                vol = standardize(self.vol_12m.loc[date].dropna())
-                roe = standardize(self.roe_12m.loc[date].dropna())
+                mom = self.perf_12m.loc[date].dropna()
+                vol = self.vol_12m.loc[date].dropna()
+                roe = self.roe_12m.loc[date].dropna()
                 rf = self.rf.loc[date]
                 vix = self.vix.loc[date]
 
-                x_features_full = extract_features(mom, vol, roe, rf, vix)
+                past_30d_returns = self.returns.loc[self.returns.index < date].tail(30)
+                current_index_weights = self.data.index_weights.loc[date]
+
+                x_features_full = extract_features(mom, vol, roe, rf, vix, past_30d_returns, current_index_weights)
                 x_features = x_features_full[x_features_full['label'].isin(self.params.ml_training_factors)]
                 features = x_features['value'].to_numpy()
                 features = features.reshape(1, -1)
@@ -602,10 +624,10 @@ class Backtest:
             '5050': self.stock_weights_5050,
             'AVG_ML': self.stock_weights_ml_av
         }
-        portfolio_returns = {name: pd.Series(index=returns.index, dtype=float) for name in strategies}
 
         month_ends = strategies['ML'].index.to_series().groupby(strategies['ML'].index.to_period("M")).last()
         month_ends = month_ends[month_ends >= self.live_begin_period]
+        portfolio_returns = {name: pd.Series(index=returns[month_ends.min():].index, dtype=float) for name in strategies}
 
         for date in tqdm(month_ends[:-1]):
             # print(date)
@@ -631,7 +653,6 @@ class Backtest:
 
         # Abspeichern und Vergleichen
         df_returns = pd.DataFrame(portfolio_returns)
-        df_returns = df_returns[self.live_begin_period:]
 
         df_cum = (1 + df_returns).cumprod()
         df_returns['ML_CUM'] = df_cum['ML']
