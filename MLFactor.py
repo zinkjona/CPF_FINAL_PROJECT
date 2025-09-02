@@ -6,26 +6,19 @@ import subprocess
 import os
 
 from tqdm import tqdm
-from blp import blp
 from datetime import datetime
 from matplotlib import pyplot as plt
 
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.feature_selection import f_regression
 
-bquery = blp.BlpQuery(parser=blp.BlpParser(raise_security_errors=False)).start()
+data_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/inputs/data.pkl'
+factor_scores_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/outputs/factor_scores.pkl'
+ml_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/outputs/ml_weights.pkl'
 
-
-ticker_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ticker_data.pkl'
-stock_prices_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/stock_prices.pkl'
-index_weights_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/index_weights.pkl'
-roe_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/roe.pkl'
-ml_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/ml_weights.pkl'
-rf_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/rf.pkl'
-vix_pickle_file_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/vix.pkl'
 notebook_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/CPF Final Project/Final Project Results.ipynb'
 html_output_dir = 'G:/TEC101/ALLE/Zink/40_CPF Program/Final Project Output/'
-factor_scores_path = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/factor_scores.pkl'
+
 
 def export_notebook_to_html():
     """
@@ -127,8 +120,8 @@ def extract_features(mom, vol, roe, rf, vix, past_30d_return, current_index_weig
 
 class Params:
     def __init__(self):
-        self.use_pickle_data = True
-        self.update_factor_scores = False
+        self.use_pickle_data = False
+        self.update_factor_scores = True
         self.recalibrate_ML_model = True
 
         self.price_frequency_str = 'D'
@@ -263,32 +256,19 @@ class Data:
 
         if self.use_pickle_data:
 
-            with open(stock_prices_pickle_file_path, 'rb') as file:
-                stock_prices = pickle.load(file)
-
-            with open(index_weights_pickle_file_path, 'rb') as file:
-                index_weights = pickle.load(file)
-
-            with open(roe_pickle_file_path, 'rb') as file:
-                roe = pickle.load(file)
-
-            with open(rf_pickle_file_path, 'rb') as file:
-                df_rf = pickle.load(file)
-
-            with open(vix_pickle_file_path, 'rb') as file:
-                df_vix = pickle.load(file)
+            with open(data_pickle_file_path, 'rb') as file:
+                data_dictionary = pickle.load(file)
 
         else:
             # 1. Ticker Mapping
-            ticker_mapping = pd.read_excel(
-                r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\isin_msci_ticker_mapping.xlsx')
+            ticker_mapping = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx', sheet_name='isin_msci_ticker_mapping')
             ticker_mapping.drop(columns=['Unnamed: 0'], inplace=True)
             ticker_mapping['MSCI_SECURITY_CODE'] = ticker_mapping['MSCI_SECURITY_CODE'].astype(str)
             ticker_mapping['BBG_TICKER'] = ticker_mapping['BBG_TICKER'].astype(str)
             mapping_dict = dict(zip(ticker_mapping['MSCI_SECURITY_CODE'], ticker_mapping['BBG_TICKER']))
 
             # 2. Stock Prices
-            stock_prices = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\stock_prices.xlsx')
+            stock_prices = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx', sheet_name='stock_prices')
             stock_prices.index = stock_prices['POS_DATE']
             stock_prices.drop(columns=['POS_DATE'], inplace=True)
             if self.price_frequency_str == 'D':
@@ -298,25 +278,18 @@ class Data:
             stock_prices = stock_prices.rename(columns=mapping_dict)
             stock_prices = stock_prices.loc[:, stock_prices.columns.isin(mapping_dict.values())]
 
-            with open(stock_prices_pickle_file_path, 'wb') as file:
-                pickle.dump(stock_prices, file)
-
             # 3. Index Weights
-            index_weights = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\index_weight.xlsx')
+            index_weights = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx', sheet_name='index_weights')
             index_weights.index = index_weights['AS_OF_DATE']
             index_weights.drop(columns=['AS_OF_DATE'], inplace=True)
-            # index_weights = index_weights.resample(self.frequency).last()
             index_weights = index_weights.rename(columns=mapping_dict)
             index_weights = index_weights.loc[:, index_weights.columns.isin(mapping_dict.values())]
             bidx = stock_prices.index.unique()
             index_weights = index_weights.reindex(bidx).ffill()
             index_weights = index_weights.div(index_weights.sum(axis=1), axis=0)
 
-            with open(index_weights_pickle_file_path, 'wb') as file:
-                pickle.dump(index_weights, file)
-
             # Return on Equity
-            roe_raw = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\roe.xlsx')
+            roe_raw = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx', sheet_name='roe')
             roe = roe_raw.pivot(index='AS_OF_DATE', columns='MSCI_SECURITY_CODE', values='ROE')
             roe.index = pd.to_datetime(roe.index, dayfirst=True)
             roe.sort_index(inplace=True)
@@ -331,57 +304,31 @@ class Data:
             bidx = stock_prices.index.unique()
             roe = roe.reindex(bidx).ffill()
 
-            with open(roe_pickle_file_path, 'wb') as file:
-                pickle.dump(roe, file)
 
+            # 4. RF und VIX
+            rf_vix = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx', sheet_name='rf_vix')
+            rf_vix.index = rf_vix['Date']
+            rf_vix.drop(columns=['Date'], inplace=True)
+            rf_vix.index = pd.to_datetime(rf_vix.index)
 
-            # 4. Risk free rate
-            df_bbg = bquery.bdh(securities=['USGG10YR Index'],
-                                         fields=['PX_LAST'],
-                                         start_date=stock_prices.index.min().strftime('%Y%m%d'),
-                                         end_date=stock_prices.index.max().strftime('%Y%m%d'),
-                                         options=[("currency", 'USD'), ("periodicitySelection", "DAILY"),
-                                               ("nonTradingDayFillOption", "NON_TRADING_WEEKDAYS"),
-                                               ("nonTradingDayFillMethod", "PREVIOUS_VALUE"),
-                                               ("periodicityAdjustment", "CALENDAR")])
-            df_bbg = df_bbg.pivot(index='date', columns='security',
-                                                    values='PX_LAST').bfill().ffill()
-            df_bbg.columns.name = None
-            df_bbg.index.name = 'Date'
-            df_bbg.columns = ['RF']
+            # 5. Create Data Dictionary
+            data_dictionary = {'stock_prices' : stock_prices,
+                               'index_weights' : index_weights,
+                               'roe' : roe,
+                               'rf_vix' : rf_vix}
 
-            df_rf = df_bbg.copy(deep=True)
-
-
-
-            # 5.VIX Index
-            df_bbg = bquery.bdh(securities=['VIX Index'],
-                                         fields=['PX_LAST'],
-                                         start_date=stock_prices.index.min().strftime('%Y%m%d'),
-                                         end_date=stock_prices.index.max().strftime('%Y%m%d'),
-                                         options=[("currency", 'USD'), ("periodicitySelection", "DAILY"),
-                                               ("nonTradingDayFillOption", "NON_TRADING_WEEKDAYS"),
-                                               ("nonTradingDayFillMethod", "PREVIOUS_VALUE"),
-                                               ("periodicityAdjustment", "CALENDAR")])
-            df_bbg = df_bbg.pivot(index='date', columns='security',
-                                                    values='PX_LAST').bfill().ffill()
-            df_bbg.columns.name = None
-            df_bbg.index.name = 'Date'
-            df_bbg.columns = ['VIX']
-
-            df_vix = df_bbg.copy(deep=True)
-
-            with open(vix_pickle_file_path, 'wb') as file:
-                pickle.dump(df_vix, file)
+            with open(data_pickle_file_path, 'wb') as file:
+                pickle.dump(data_dictionary, file)
 
 
         # self.stock_prices = stock_prices.loc[stock_prices.index.year >= 2018]
-        self.stock_prices = stock_prices
-        self.returns = self.stock_prices.pct_change(fill_method=None)
-        self.index_weights = index_weights
-        self.roe = roe
-        self.rf = df_rf.copy(deep=True)
-        self.vix = df_vix.copy(deep=True)
+        self.stock_prices = data_dictionary['stock_prices']
+        self.index_weights = data_dictionary['index_weights']
+        self.roe = data_dictionary['roe']
+        self.rf = data_dictionary['rf_vix'][['RF']].copy(deep=True)
+        self.vix = data_dictionary['rf_vix'][['VIX']].copy(deep=True)
+        self.returns = data_dictionary['stock_prices'].pct_change(fill_method=None)
+
 
         print("Data geladen.")
 
@@ -488,11 +435,11 @@ class Factors:
                 'roe_12m': roe_12m
             }
 
-            with open(factor_scores_path, 'wb') as file:
+            with open(factor_scores_pickle_file_path, 'wb') as file:
                 pickle.dump(factor_scores, file)
 
         else:
-            with open(factor_scores_path, 'rb') as file:
+            with open(factor_scores_pickle_file_path, 'rb') as file:
                 factor_scores = pickle.load(file)
 
         self.mom_ranks = factor_scores['mom_ranks'].dropna(how='all')
