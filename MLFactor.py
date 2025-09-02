@@ -107,19 +107,7 @@ def extract_features(mom, vol, roe, rf, vix):
     return df
 
 
-def compute_stock_weights(factor_1_ranks, factor_2_ranks, factor_weights):
-    # Get Stock weights from factors weights by multiplying ranks with factor weights and rescaling
 
-    """
-    Berechnet die Aktiengewichte, indem die Faktor-Ranks mit den gegebenen Faktor-Gewichten
-    kombiniert und normalisiert werden.
-    """
-    # Kombiniere die Faktor-Ranks mit den entsprechenden Gewichtungen
-    factors_weighted = factor_1_ranks.mul(factor_weights['WEIGHT_FACTOR_1'], axis=0) + factor_2_ranks.mul(factor_weights['WEIGHT_FACTOR_2'], axis=0)
-    row_sums = factors_weighted.sum(axis=1).replace(0, np.nan)
-    stock_weights = factors_weighted.div(row_sums, axis=0)
-    stock_weights.index = pd.to_datetime(stock_weights.index)
-    return stock_weights.copy(deep=True)
 
 
 class Params:
@@ -130,8 +118,8 @@ class Params:
 
         self.price_frequency_str = 'D'
         self.price_frequency_num = 252
-        self.training_end_period = pd.Timestamp('2099-12-31')
-        self.live_begin_period = pd.Timestamp('2004-01-01')
+        self.training_end_period = pd.Timestamp('2010-12-31')
+        self.live_begin_period = pd.Timestamp('2011-01-01')
         self.ml_training_factors = ['mean_mom', 'mean_roe',  'corr_mom_roe', 'rf', 'vix']
         self.relevant_factors = ['mom', 'roe']
 
@@ -187,10 +175,6 @@ class MLModel:
                     vol_ranks = self.factors.vol_ranks.loc[date].loc[valid_assets]
                     roe_ranks = self.factors.roe_ranks.loc[date].loc[valid_assets]
 
-                    # Zu reskalierende Variablen
-                    index_weights = self.data.index_weights.loc[date].loc[valid_assets]
-                    index_weights = index_weights / index_weights.sum()
-
                     # Features: einfache Statistik über die Faktorwerte
                     x_features_full = extract_features(mom, vol, roe, rf, vix)
                     x_features = x_features_full[x_features_full['label'].isin(self.ml_training_factors)]
@@ -206,10 +190,9 @@ class MLModel:
                     for w in weight_grid:
                         score_df = pd.DataFrame({f: factor_ranks[f] for f in relevant})
                         combined_score = score_df.dot([w, 1-w])
-                        combined_score = combined_score.reindex(index_weights.index)
-                        integrated_weights = index_weights.fillna(0).infer_objects() * combined_score.fillna(0).infer_objects()
-                        integrated_weights = integrated_weights / integrated_weights.sum()
-                        perf = next_returns[integrated_weights.index].dot(integrated_weights)
+                        combined_score = combined_score.reindex(next_returns.columns)
+                        scored_weights = combined_score / combined_score.sum()
+                        perf = next_returns.dot(scored_weights.fillna(0))
                         cum_return = (1 + perf).prod()
                         if cum_return > best_return:
                             best_return = cum_return
@@ -309,6 +292,7 @@ class Data:
             index_weights = index_weights.loc[:, index_weights.columns.isin(mapping_dict.values())]
             bidx = stock_prices.index.unique()
             index_weights = index_weights.reindex(bidx).ffill()
+            index_weights = index_weights.div(index_weights.sum(axis=1), axis=0)
 
             with open(index_weights_pickle_file_path, 'wb') as file:
                 pickle.dump(index_weights, file)
@@ -426,12 +410,12 @@ class Factors:
     def __init__(self, data: Data, params: Params):
         self.price_frequency_num = params.price_frequency_num
         self.params = params
+        self.data = data
         self.roe = data.roe
         self.stock_prices = data.stock_prices
         self.rf = data.rf
         self.vix = data.vix
         self.returns = data.returns
-        self.live_begin_period = params.live_begin_period
         self.update_factor_scores = params.update_factor_scores
         self.relevant_factors = params.relevant_factors
 
@@ -511,9 +495,8 @@ class Factors:
             model = pickle.load(f)
 
         weights = pd.DataFrame(index=self.mom_ranks.index, columns=['WEIGHT_FACTOR_1', 'WEIGHT_FACTOR_2'])
-        relevant_dates = self.mom_ranks.index[self.mom_ranks.index >= self.live_begin_period]
 
-        for date in tqdm(relevant_dates):
+        for date in tqdm(self.mom_ranks.index):
             try:
                 mom = standardize(self.perf_12m.loc[date].dropna())
                 vol = standardize(self.vol_12m.loc[date].dropna())
@@ -532,13 +515,13 @@ class Factors:
                 weights.loc[date] = [0.5, 0.5]
 
         # Save ML Factor Weight
-        self.factor_weight = weights.copy(deep=True)
+        self.factor_weight_predicted = weights.copy(deep=True)
 
         # Calculate 50/50 Factor Weight
-        self.factor_weight_5050 = self.factor_weight.where(self.factor_weight.isna(), 0.5)
+        self.factor_weight_5050 = self.factor_weight_predicted.where(self.factor_weight_predicted.isna(), 0.5)
 
         # Average of ML factor weights
-        self.factor_weight_av =  self.factor_weight.copy(deep=True)
+        self.factor_weight_av =  self.factor_weight_predicted.copy(deep=True)
         self.factor_weight_av['WEIGHT_FACTOR_1'] = self.factor_weight_av['WEIGHT_FACTOR_1'].where(self.factor_weight_av['WEIGHT_FACTOR_1'].isna(), self.factor_weight_av['WEIGHT_FACTOR_1'].mean())
         self.factor_weight_av['WEIGHT_FACTOR_2'] = self.factor_weight_av['WEIGHT_FACTOR_2'].where(self.factor_weight_av['WEIGHT_FACTOR_2'].isna(), 1 - self.factor_weight_av['WEIGHT_FACTOR_1'].mean())
 
@@ -546,7 +529,7 @@ class Factors:
         summary = {}
 
         for name, df in {
-            'ML': self.factor_weight,
+            'ML': self.factor_weight_predicted,
             '5050': self.factor_weight_5050,
             'AVG_ML': self.factor_weight_av
         }.items():
@@ -563,11 +546,37 @@ class Factors:
     def get_stock_weights(self):
         print("Stock Weights werden aus Faktogewichten berechnet...")
         factor_ranks = {f: getattr(self, f"{f}_ranks") for f in self.relevant_factors}
+        stock_ranks_factor_1 = factor_ranks[self.relevant_factors[0]]
+        stock_ranks_factor_2 = factor_ranks[self.relevant_factors[1]]
+
         # Get Stock weights from factors weights by multiplying ranks with factor weights and rescaling
-        self.stock_weights_ml = compute_stock_weights(factor_ranks[self.relevant_factors[0]], factor_ranks[self.relevant_factors[1]], self.factor_weight)
-        self.stock_weights_5050 = compute_stock_weights(factor_ranks[self.relevant_factors[0]], factor_ranks[self.relevant_factors[1]], self.factor_weight_5050)
-        self.stock_weights_ml_av = compute_stock_weights(factor_ranks[self.relevant_factors[0]], factor_ranks[self.relevant_factors[1]], self.factor_weight_av)
+        stock_weights_ml = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_predicted)
+        stock_weights_5050 = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_5050)
+        stock_weights_ml_av = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_av)
+
+        self.stock_weights_ml = stock_weights_ml.copy(deep=True)
+        self.stock_weights_5050 = stock_weights_5050.copy(deep=True)
+        self.stock_weights_ml_av = stock_weights_ml_av.copy(deep=True)
         print("Stock Weights berechnet.")
+
+    def compute_stock_weights(self, stock_ranks_factor_1, stock_ranks_factor_2, factor_weights):
+        # Get Stock weights from factors weights by multiplying ranks with factor weights and rescaling
+        """
+        Berechnet die Aktiengewichte, indem die Faktor-Ranks mit den gegebenen Faktor-Gewichten
+        kombiniert und normalisiert werden.
+        """
+        # Kombiniere die Faktor-Ranks mit den entsprechenden Gewichtungen
+        index_weights = self.data.index_weights[stock_ranks_factor_1.index.min():stock_ranks_factor_1.index.max()]
+
+        # Integrate factor weights in stock ranks
+        scored_weight = stock_ranks_factor_1.mul(factor_weights['WEIGHT_FACTOR_1'], axis=0) + stock_ranks_factor_2.mul(factor_weights['WEIGHT_FACTOR_2'], axis=0)
+
+        # Rescale
+        integrated_weight = index_weights * scored_weight
+        integrated_weight = integrated_weight.div(integrated_weight.sum(axis=1), axis=0)
+
+        integrated_weight.index = pd.to_datetime(integrated_weight.index)
+        return integrated_weight.copy(deep=True)
 
 
 class Backtest:
