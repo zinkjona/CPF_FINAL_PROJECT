@@ -1,4 +1,5 @@
 # TODO: optimize model setting (GridSearchCV or RandomizedSearchCV) in xgboost
+# TODO: factor weights over time plotting
 
 import os
 import pickle
