@@ -1,3 +1,5 @@
+# TODO: optimize model setting (GridSearchCV or RandomizedSearchCV) in xgboost
+
 import os
 import pickle
 import subprocess
@@ -862,11 +864,11 @@ if __name__ == '__main__':
     print("End Model 11")
 
 
-    # Zusammenfügen
+    # Summarize
     bt_list = []
     for i in range(0, 12):
         bt = globals()[f'ml_model_{i}']['backtest'].bt_performance.copy()
-        bt['Modell'] = f'Model_{i}'
+        bt['Model'] = f'Model_{i}'
         bt['Strategy'] = bt.index
         bt_list.append(bt)
 
