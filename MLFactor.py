@@ -690,9 +690,31 @@ def initialize_ml_model(update_params):
     return summary_dict
 
 
-
 if __name__ == '__main__':
     # 1. Model
-    update_params_ = {'test_start_period' : pd.Timestamp('2016-01-01')}
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2012-12-31'),
+                      'test_start_period': pd.Timestamp('2013-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
+                                               'past_index_return', 'past_index_vola', 'rf', 'vix']}
     ml_model_1 = initialize_ml_model(update_params_)
+
+    # 2. Model
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2014-12-31'),
+                      'test_start_period': pd.Timestamp('2015-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
+                                              'past_index_return', 'past_index_vola', 'rf', 'vix']}
+    ml_model_2 = initialize_ml_model(update_params_)
+
+    # 3. Model
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2019-12-31'),
+                      'test_start_period': pd.Timestamp('2020-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
+                                              'past_index_return', 'past_index_vola', 'rf', 'vix']}
+    ml_model_3 = initialize_ml_model(update_params_)
     pass
