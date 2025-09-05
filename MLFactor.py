@@ -620,10 +620,6 @@ class Backtest:
             'AVG_ML': self.stock_weights_ml_av,
             'INDEX': self.stock_weights_index
         }
-        self.stock_weights_ml.isna().sum().sum()
-        self.stock_weights_5050.isna().sum().sum()
-        self.stock_weights_ml_av.isna().sum().sum()
-        self.stock_weights_index.isna().sum().sum()
 
         month_ends = strategies['ML'].index.to_series().groupby(strategies['ML'].index.to_period("M")).last()
         month_ends = month_ends[month_ends >= self.test_start_period]
