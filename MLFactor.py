@@ -11,6 +11,9 @@ from tqdm import tqdm
 
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.feature_selection import f_regression
+import lightgbm as lgb
+import xgboost as xgb
+from catboost import CatBoostRegressor
 
 DATA_PICKLE_FILE_PATH = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/inputs/data.pkl'
 FACTOR_SCORES_PICKLE_FILE_PATH = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/outputs/factor_scores.pkl'
@@ -125,7 +128,8 @@ class Params:
                           'test_end_period' : pd.Timestamp('2025-03-20'),
                           'ml_training_factors' : ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
                                                     'past_index_return', 'past_index_vola', 'rf', 'vix'],
-                          'relevant_factors' : ['mom', 'roe']}
+                          'relevant_factors' : ['mom', 'roe'],
+                            'ml_model' : 'RandomForestRegressor'}
 
 class Data:
     def __init__(self, params: Params):
@@ -549,7 +553,16 @@ class MLModel:
                 except ValueError:
                     continue
 
-            model = RandomForestRegressor(n_estimators=100, random_state=42)
+            if self.params.params_dict['ml_model'] == 'RandomForestRegressor':
+                model = RandomForestRegressor(n_estimators=100, random_state=42)
+            elif self.params.params_dict['ml_model'] == 'lightgbm':
+                model = lgb.LGBMRegressor(n_estimators=100, random_state=42)
+            elif self.params.params_dict['ml_model'] == 'xgboost':
+                model = xgb.XGBRegressor(n_estimators=100, random_state=42, use_label_encoder=False, eval_metric='rmse')
+            elif self.params.params_dict['ml_model'] == 'catboost':
+                model = CatBoostRegressor(iterations=100, random_seed=42, verbose=0)
+            else:
+                raise ValueError(f"Unkown ML-Model-Name: {self.params.params_dict['ml_model']}")
             model.fit(x, y)
 
             # Importance Analysis
@@ -773,4 +786,52 @@ if __name__ == '__main__':
                       'ml_training_factors': ['past_index_return', 'past_index_vola']}
     ml_model_7 = initialize_ml_model(update_params_)
     print(ml_model_7['backtest'].bt_performance)
+    pass
+
+    # 8. Model
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2014-12-31'),
+                      'test_start_period': pd.Timestamp('2015-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
+                                              'past_index_return', 'past_index_vola', 'rf', 'vix'],
+                      'ml_model' : 'RandomForestRegressor'}
+    ml_model_8 = initialize_ml_model(update_params_)
+    print(ml_model_8['backtest'].bt_performance)
+    pass
+
+    # 9. Model
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2014-12-31'),
+                      'test_start_period': pd.Timestamp('2015-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
+                                              'past_index_return', 'past_index_vola', 'rf', 'vix'],
+                      'ml_model' : 'lightgbm'}
+    ml_model_9 = initialize_ml_model(update_params_)
+    print(ml_model_9['backtest'].bt_performance)
+    pass
+
+    # 10. Model
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2014-12-31'),
+                      'test_start_period': pd.Timestamp('2015-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
+                                              'past_index_return', 'past_index_vola', 'rf', 'vix'],
+                      'ml_model' : 'xgboost'}
+    ml_model_10 = initialize_ml_model(update_params_)
+    print(ml_model_10['backtest'].bt_performance)
+    pass
+
+    # 11. Model
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2014-12-31'),
+                      'test_start_period': pd.Timestamp('2015-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
+                                              'past_index_return', 'past_index_vola', 'rf', 'vix'],
+                      'ml_model' : 'catboost'}
+    ml_model_11 = initialize_ml_model(update_params_)
+    print(ml_model_11['backtest'].bt_performance)
     pass
