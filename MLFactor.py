@@ -19,7 +19,6 @@ ML_PICKLE_FILE_PATH = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/out
 NOTEBOOK_PATH = 'G:/TEC101/ALLE/Zink/40_CPF Program/CPF Final Project/Final Project Results.ipynb'
 HTML_OUTPUT_DIR = 'G:/TEC101/ALLE/Zink/40_CPF Program/Final Project Output/'
 
-
 def export_notebook_to_html():
     """
      	Exports a predefined notebook to HTML with a timestamp.
@@ -115,24 +114,24 @@ def extract_features(mom, vol, roe, rf, vix, past_30d_return, current_index_weig
 
 class Params:
     def __init__(self):
-        self.use_pickle_data = True
-        self.update_factor_scores = False
-        self.recalibrate_ML_model = False
-
-        self.price_frequency_str = 'D'
-        self.price_frequency_num = 252
-        self.training_end_period = pd.Timestamp('2015-12-31')
-        self.live_begin_period = pd.Timestamp('2016-01-01')
-        self.ml_training_factors = ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
-                                    'past_index_return', 'past_index_vola', 'rf', 'vix']
-        self.relevant_factors = ['mom', 'roe']
-
+        self.params_dict = {'use_pickle_data' : True,
+                      'update_factor_scores' : True,
+                      'recalibrate_ML_model' : True,
+                      'price_frequency_str' : 'D',
+                      'price_frequency_num' : 252,
+                      'training_start_period' : pd.Timestamp('2007-01-31'),
+                      'training_end_period' : pd.Timestamp('2012-12-31'),
+                      'test_start_period' : pd.Timestamp('2013-01-01'),
+                      'test_end_period' : pd.Timestamp('2025-03-20'),
+                      'ml_training_factors' : ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
+                                                'past_index_return', 'past_index_vola', 'rf', 'vix'],
+                      'relevant_factors' : ['mom', 'roe']}
 
 class Data:
     def __init__(self, params: Params):
-        self.price_frequency_str = params.price_frequency_str
-        self.use_pickle_data = params.use_pickle_data
-        self.price_frequency_num = params.price_frequency_num
+        self.price_frequency_str = params.params_dict['price_frequency_str']
+        self.use_pickle_data = params.params_dict['use_pickle_data']
+        self.price_frequency_num = params.params_dict['price_frequency_num']
 
         self.stock_prices = None
         self.index_weights = None
@@ -264,7 +263,7 @@ class Data:
 
 class Factors:
     def __init__(self, data: Data, params: Params):
-        self.price_frequency_num = params.price_frequency_num
+        self.price_frequency_num = params.params_dict['price_frequency_num']
         self.params = params
         self.data = data
         self.roe = data.roe
@@ -272,8 +271,8 @@ class Factors:
         self.rf = data.rf
         self.vix = data.vix
         self.returns = data.returns
-        self.update_factor_scores = params.update_factor_scores
-        self.relevant_factors = params.relevant_factors
+        self.update_factor_scores = params.params_dict['update_factor_scores']
+        self.relevant_factors = params.params_dict['relevant_factors']
 
         self.factor_weight_predicted = None
         self.factor_weight_5050 = None
@@ -378,7 +377,7 @@ class Factors:
                 current_index_weights = self.data.index_weights.loc[date]
 
                 x_features_full = extract_features(mom, vol, roe, rf, vix, past_30d_returns, current_index_weights)
-                x_features = x_features_full[x_features_full['label'].isin(self.params.ml_training_factors)]
+                x_features = x_features_full[x_features_full['label'].isin(self.params.params_dict['ml_training_factors'])]
                 features = x_features['value'].to_numpy()
                 features = features.reshape(1, -1)
 
@@ -462,22 +461,23 @@ class MLModel:
         self.returns = data.returns
         self.rf = data.rf
         self.vix = data.vix
-        self.training_end_period = params.training_end_period
-        self.ml_training_factors = params.ml_training_factors
-        self.relevant_factors = params.relevant_factors
+        self.training_start_period = params.params_dict['training_start_period']
+        self.training_end_period = params.params_dict['training_end_period']
+        self.ml_training_factors = params.params_dict['ml_training_factors']
+        self.relevant_factors = params.params_dict['relevant_factors']
 
         self.df_importance = None
         self.feature_stats = None
 
     def train_model(self):
         print("Model is trained...")
-        if self.params.recalibrate_ML_model:
+        if self.params.params_dict['recalibrate_ML_model']:
             x = []
             y = []
-            training_end_period = self.training_end_period
             month_ends = self.factors.mom_ranks.index.to_series().groupby(self.factors.mom_ranks.index.
                                                                           to_period("M")).last()
-            month_ends = month_ends[month_ends <= training_end_period]
+            month_ends = month_ends[month_ends <= self.training_end_period]
+            month_ends = month_ends[month_ends >= self.training_start_period]
 
             weight_grid = np.round(np.linspace(0, 1, 11), 2)
             x_features = pd.DataFrame()
@@ -568,15 +568,15 @@ class MLModel:
 
             print("ML-Model saved.")
         else:
-            print("ML-Model could not be saved.")
-        print("Model saved.")
+            print("ML-Model loaded.")
 
 
 class Backtest:
     def __init__(self, data: Data, factors: Factors, params: Params):
-        self.price_frequency_num = params.price_frequency_num
+        self.price_frequency_num = params.params_dict['price_frequency_num']
         self.returns = data.returns
-        self.live_begin_period = params.live_begin_period
+        self.test_start_period = params.params_dict['test_start_period']
+        self.test_end_period = params.params_dict['test_end_period']
 
         self.stock_weights_ml = factors.stock_weights_ml
         self.stock_weights_5050 = factors.stock_weights_5050
@@ -598,7 +598,9 @@ class Backtest:
         }
 
         month_ends = strategies['ML'].index.to_series().groupby(strategies['ML'].index.to_period("M")).last()
-        month_ends = month_ends[month_ends >= self.live_begin_period]
+        month_ends = month_ends[month_ends >= self.test_start_period]
+        month_ends = month_ends[month_ends <= self.test_end_period]
+
         portfolio_returns = {name: pd.Series(index=returns[month_ends.min():].index, dtype=float)
                              for name in strategies}
 
@@ -657,27 +659,40 @@ class Backtest:
         self.bt_performance = pd.DataFrame(performance_dict).T
         print("Backtest done.")
 
-
-if __name__ == '__main__':
-    # 0. Run Code via Jupyter Notebook
-    # export_notebook_to_html()
-
-    # 0. Define Params
+def initialize_ml_model(update_params):
+    # 1. Define Params
     params_ = Params()
+    params_.params_dict.update(update_params)
 
-    # 1. Load Data
-    data_instance = Data(params = params_)
-    data_instance.get_data()
-    data_instance.get_descriptive_stats()
+    # 2. Load Data
+    data_ = Data(params = params_)
+    data_.get_data()
+    data_.get_descriptive_stats()
 
-    # 2. Get Factored Weights
-    factors_ = Factors(data = data_instance, params = params_)
+    # 3. Get Factored Weights
+    factors_ = Factors(data = data_, params = params_)
     factors_.get_factor_scores()
-    ml_model = MLModel(factors=factors_, data = data_instance, params=params_)
-    ml_model.train_model()
+    ml_model_ = MLModel(factors=factors_, data = data_, params=params_)
+    ml_model_.train_model()
     factors_.get_factor_weight()
     factors_.get_stock_weights()
 
-    # 3. Run Backtest
-    backtest_ = Backtest(data = data_instance, factors = factors_, params = params_)
+    # 4. Run Backtest
+    backtest_ = Backtest(data = data_, factors = factors_, params = params_)
     backtest_.run_backtest()
+
+    summary_dict = {'params' : params_,
+                    'data' : data_,
+                    'factors' : factors_,
+                    'ml_model' : ml_model_,
+                    'backtest' : backtest_}
+
+    return summary_dict
+
+
+
+if __name__ == '__main__':
+    # 1. Model
+    update_params_ = {'test_start_period' : pd.Timestamp('2016-01-01')}
+    ml_model_1 = initialize_ml_model(update_params_)
+    pass
