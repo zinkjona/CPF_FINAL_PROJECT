@@ -877,4 +877,6 @@ if __name__ == '__main__':
         bt_list.append(bt)
 
     df_all = pd.concat(bt_list, ignore_index=True)
-    df_all.to_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Ergebnisse\backtest_summary.xlsx')
+    timestamp_ = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    excel_path = fr'G:\TEC101\ALLE\Zink\40_CPF Program\Ergebnisse\backtest_summary_{timestamp_}.xlsx'
+    df_all.to_excel(excel_path, index=False)
