@@ -868,7 +868,7 @@ if __name__ == '__main__':
 
     # Summarize
     bt_list = []
-    for i in range(1, 3):
+    for i in range(1, 13):
         ml_model = globals()[f'ml_model_{i}']
         update_params_full = globals()[f'update_params_{i}']
         bt = ml_model['backtest'].bt_performance.copy()
