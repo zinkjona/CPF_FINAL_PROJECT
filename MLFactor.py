@@ -281,6 +281,7 @@ class Factors:
         self.stock_weights_ml = None
         self.stock_weights_5050 = None
         self.stock_weights_ml_av = None
+        self.stock_weights_index = None
         self.mom_ranks = None
         self.vol_ranks = None
         self.roe_ranks = None
@@ -357,7 +358,7 @@ class Factors:
 
 
     def get_factor_weight(self):
-        print("ML factor model is applied to get weights...")
+        print("ML factor model is applied to get monthly factor weights...")
         # Calculate Factor Weight from ML Model
 
         with open(ML_PICKLE_FILE_PATH, "rb") as f:
@@ -427,18 +428,21 @@ class Factors:
 
         # Get Stock weights from factors weights by multiplying ranks with factor weights and rescaling
         stock_weights_ml = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2,
-                                                      self.factor_weight_predicted)
+                                                      self.factor_weight_predicted, scoring_method='factor_integration')
         stock_weights_5050 = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2,
-                                                        self.factor_weight_5050)
+                                                        self.factor_weight_5050, scoring_method='factor_integration')
         stock_weights_ml_av = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2,
-                                                         self.factor_weight_av)
+                                                         self.factor_weight_av, scoring_method='factor_integration')
+        stock_weights_index = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2,
+                                                         self.factor_weight_av, scoring_method='index_weights')
 
+        self.stock_weights_index = stock_weights_index.copy(deep=True)
         self.stock_weights_ml = stock_weights_ml.copy(deep=True)
         self.stock_weights_5050 = stock_weights_5050.copy(deep=True)
         self.stock_weights_ml_av = stock_weights_ml_av.copy(deep=True)
         print("Stock Weights calculated.")
 
-    def compute_stock_weights(self, stock_ranks_factor_1, stock_ranks_factor_2, factor_weights):
+    def compute_stock_weights(self, stock_ranks_factor_1, stock_ranks_factor_2, factor_weights, scoring_method):
         index_weights = self.data.index_weights[stock_ranks_factor_1.index.min():stock_ranks_factor_1.index.max()]
 
         # Integrate factor weights in stock ranks
@@ -446,9 +450,12 @@ class Factors:
                                                     factor_weights['WEIGHT_FACTOR_2'], axis=0)
 
         # Rescale
-        integrated_weight = index_weights * scored_weight
-        integrated_weight = integrated_weight.div(integrated_weight.sum(axis=1), axis=0)
+        if scoring_method == 'index_weights':
+            integrated_weight = index_weights[scored_weight.notna()]
+        else:
+            integrated_weight = index_weights * scored_weight
 
+        integrated_weight = integrated_weight.div(integrated_weight.sum(axis=1), axis=0)
         integrated_weight.index = pd.to_datetime(integrated_weight.index)
         return integrated_weight.copy(deep=True)
 
@@ -583,6 +590,7 @@ class Backtest:
         self.stock_weights_ml = factors.stock_weights_ml
         self.stock_weights_5050 = factors.stock_weights_5050
         self.stock_weights_ml_av = factors.stock_weights_ml_av
+        self.stock_weights_index = factors.stock_weights_index
 
         self.df_portfolio_returns = None
         self.bt_performance = None
@@ -596,8 +604,13 @@ class Backtest:
         strategies = {
             'ML': self.stock_weights_ml,
             '5050': self.stock_weights_5050,
-            'AVG_ML': self.stock_weights_ml_av
+            'AVG_ML': self.stock_weights_ml_av,
+            'INDEX': self.stock_weights_index
         }
+        self.stock_weights_ml.isna().sum().sum()
+        self.stock_weights_5050.isna().sum().sum()
+        self.stock_weights_ml_av.isna().sum().sum()
+        self.stock_weights_index.isna().sum().sum()
 
         month_ends = strategies['ML'].index.to_series().groupby(strategies['ML'].index.to_period("M")).last()
         month_ends = month_ends[month_ends >= self.test_start_period]
@@ -618,13 +631,14 @@ class Backtest:
                 if date not in stock_weights.index:
                     continue
 
-                weights = stock_weights.loc[date].dropna()
-                weights = weights[weights.index.isin(returns.columns)]
-                if weights.sum() == 0:
+                strategy_weights = stock_weights.loc[date].dropna()
+                strategy_weights = strategy_weights[strategy_weights.index.isin(period_returns.columns)]
+                strategy_returns = period_returns.loc[:, period_returns.columns.isin(strategy_weights.index)]
+                if strategy_weights.sum() == 0:
                     continue
-                weights = weights / weights.sum()
+                strategy_weights = strategy_weights / strategy_weights.sum()
 
-                perf = period_returns[weights.index].dot(weights)
+                perf = strategy_returns[strategy_weights.index].dot(strategy_weights)
                 portfolio_returns[name].update(perf.astype(float))
 
         # Save and Compare
@@ -634,12 +648,13 @@ class Backtest:
         df_returns['ML_CUM'] = df_cum['ML']
         df_returns['5050_CUM'] = df_cum['5050']
         df_returns['AVG_ML_CUM'] = df_cum['AVG_ML']
+        df_returns['INDEX_CUM'] = df_cum['INDEX']
 
         self.df_portfolio_returns = df_returns.copy(deep=True)
 
         # 5.  Calculate Backtest Performance measures
         performance_dict = {}
-        for strat in ['ML', '5050', 'AVG_ML']:
+        for strat in ['ML', '5050', 'AVG_ML', 'INDEX']:
             strat_returns = self.df_portfolio_returns[strat].dropna()
             strat_cum = self.df_portfolio_returns[f"{strat}_CUM"].dropna()
 
@@ -723,4 +738,39 @@ if __name__ == '__main__':
     ml_model_3 = initialize_ml_model(update_params_)
     print(ml_model_3['backtest'].bt_performance)
 
+    # 4. Model
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2014-12-31'),
+                      'test_start_period': pd.Timestamp('2015-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return']}
+    ml_model_4 = initialize_ml_model(update_params_)
+    print(ml_model_4['backtest'].bt_performance)
+
+    # 5. Model
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2014-12-31'),
+                      'test_start_period': pd.Timestamp('2015-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['past_mom_return', 'past_roe_return']}
+    ml_model_5 = initialize_ml_model(update_params_)
+    print(ml_model_5['backtest'].bt_performance)
+
+    # 6. Model
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2014-12-31'),
+                      'test_start_period': pd.Timestamp('2015-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['rf', 'vix']}
+    ml_model_6 = initialize_ml_model(update_params_)
+    print(ml_model_6['backtest'].bt_performance)
+
+    # 7. Model
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2014-12-31'),
+                      'test_start_period': pd.Timestamp('2015-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['past_index_return', 'past_index_vola']}
+    ml_model_7 = initialize_ml_model(update_params_)
+    print(ml_model_7['backtest'].bt_performance)
     pass
