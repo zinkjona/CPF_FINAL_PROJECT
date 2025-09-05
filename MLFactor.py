@@ -22,10 +22,10 @@ HTML_OUTPUT_DIR = 'G:/TEC101/ALLE/Zink/40_CPF Program/Final Project Output/'
 
 def export_notebook_to_html():
     """
-    Exportiert ein fest definiertes Notebook zu HTML mit Zeitstempel.
+     	Exports a predefined notebook to HTML with a timestamp.
     """
     if not os.path.isfile(NOTEBOOK_PATH):
-        raise FileNotFoundError(f"❌ Notebook nicht gefunden: {NOTEBOOK_PATH}")
+        raise FileNotFoundError(f"❌ Notebook not found: {NOTEBOOK_PATH}")
 
     notebook_name = os.path.splitext(os.path.basename(NOTEBOOK_PATH))[0]
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -39,9 +39,9 @@ def export_notebook_to_html():
         NOTEBOOK_PATH
     ]
 
-    print("🚀 Exportiere Notebook nach HTML...")
+    print("🚀 Export Notebook to HTML...")
     subprocess.run(command, check=True)
-    print(f"✅ Export erfolgreich: {os.path.join(HTML_OUTPUT_DIR, output_filename)}")
+    print(f"✅ Export successful: {os.path.join(HTML_OUTPUT_DIR, output_filename)}")
 
 def factor_return(factor_values, label_order, current_index_weights, past_30d_return):
     weights = pd.qcut(factor_values, q=5, labels=label_order).astype(int) * current_index_weights
@@ -123,7 +123,8 @@ class Params:
         self.price_frequency_num = 252
         self.training_end_period = pd.Timestamp('2015-12-31')
         self.live_begin_period = pd.Timestamp('2016-01-01')
-        self.ml_training_factors = ['mom_roe_corr', 'past_mom_return', 'past_roe_return',  'past_index_return', 'past_index_vola', 'rf', 'vix']
+        self.ml_training_factors = ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
+                                    'past_index_return', 'past_index_vola', 'rf', 'vix']
         self.relevant_factors = ['mom', 'roe']
 
 
@@ -142,7 +143,7 @@ class Data:
         self.descriptive_stats = None
 
     def get_data(self):
-        print("Data wird geladen...")
+        print("Data is load...")
 
         if self.use_pickle_data:
 
@@ -151,14 +152,16 @@ class Data:
 
         else:
             # 1. Ticker Mapping
-            ticker_mapping = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx', sheet_name='isin_msci_ticker_mapping')
+            ticker_mapping = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\
+                                                inputs\data.xlsx', sheet_name='isin_msci_ticker_mapping')
             ticker_mapping.drop(columns=['Unnamed: 0'], inplace=True)
             ticker_mapping['MSCI_SECURITY_CODE'] = ticker_mapping['MSCI_SECURITY_CODE'].astype(str)
             ticker_mapping['BBG_TICKER'] = ticker_mapping['BBG_TICKER'].astype(str)
             mapping_dict = dict(zip(ticker_mapping['MSCI_SECURITY_CODE'], ticker_mapping['BBG_TICKER']))
 
             # 2. Stock Prices
-            stock_prices = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx', sheet_name='stock_prices')
+            stock_prices = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx',
+                                         sheet_name='stock_prices')
             stock_prices.index = stock_prices['POS_DATE']
             stock_prices.drop(columns=['POS_DATE'], inplace=True)
             if self.price_frequency_str == 'D':
@@ -169,7 +172,8 @@ class Data:
             stock_prices = stock_prices.loc[:, stock_prices.columns.isin(mapping_dict.values())]
 
             # 3. Index Weights
-            index_weights = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx', sheet_name='index_weights')
+            index_weights = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx',
+                                          sheet_name='index_weights')
             index_weights.index = index_weights['AS_OF_DATE']
             index_weights.drop(columns=['AS_OF_DATE'], inplace=True)
             index_weights = index_weights.rename(columns=mapping_dict)
@@ -179,7 +183,8 @@ class Data:
             index_weights = index_weights.div(index_weights.sum(axis=1), axis=0)
 
             # Return on Equity
-            roe_raw = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx', sheet_name='roe')
+            roe_raw = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx',
+                                    sheet_name='roe')
             roe = roe_raw.pivot(index='AS_OF_DATE', columns='MSCI_SECURITY_CODE', values='ROE')
             roe.index = pd.to_datetime(roe.index, dayfirst=True)
             roe.sort_index(inplace=True)
@@ -196,7 +201,8 @@ class Data:
 
 
             # 4. RF und VIX
-            rf_vix = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx', sheet_name='rf_vix')
+            rf_vix = pd.read_excel(r'G:\TEC101\ALLE\Zink\40_CPF Program\Data\Final Project\inputs\data.xlsx',
+                                   sheet_name='rf_vix')
             rf_vix.index = rf_vix['Date']
             rf_vix.drop(columns=['Date'], inplace=True)
             rf_vix.index = pd.to_datetime(rf_vix.index)
@@ -220,15 +226,11 @@ class Data:
         self.returns = data_dictionary['stock_prices'].pct_change(fill_method=None)
 
 
-        print("Data geladen.")
+        print("Data load.")
 
     def get_descriptive_stats(self):
-        """
-        Erzeugt ein Dictionary mit wichtigen Statistiken über den Returns-Datensatz.
-        """
         returns = self.returns.dropna(how='all', axis=1)
 
-        # Basisinformationen
         basic_info = {
             "start_date": returns.index.min(),
             "end_date": returns.index.max(),
@@ -236,7 +238,6 @@ class Data:
             "num_assets": returns.shape[1],
         }
 
-        # Verfügbarkeit
         missing = returns.isna().sum()
         missing_percent = missing / len(returns) * 100
 
@@ -247,12 +248,12 @@ class Data:
             "num_fully_available_assets": np.sum((missing == 0))
         }
 
-        # Renditestatistik
+        # Return Stats
         stats = returns.describe().T[["mean", "std", "min", "max"]]
         stats["mean"] *= self.price_frequency_num
         stats["std"] *= np.sqrt(self.price_frequency_num)
 
-        # Save alles in Dictionary
+        # Save in Dictionary
         self.descriptive_stats = {
             "basic_info": basic_info,
             "availability_stats": availability_stats,
@@ -289,7 +290,7 @@ class Factors:
         self.roe_12m = None
 
     def get_factor_scores(self):
-        print("Factor Ränge werden berechnet...")
+        print("Factor Ranks are calculated")
 
         factor_scores = {}
         if self.update_factor_scores:
@@ -323,7 +324,6 @@ class Factors:
                     roe_ranks.loc[date] = quintiles_roe
 
                 except ValueError:
-                    # wenn zu viele NaNs in der Zeile sind
                     mom_ranks.loc[date] = np.nan
                     vol_ranks.loc[date] = np.nan
                     roe_ranks.loc[date] = np.nan
@@ -354,11 +354,11 @@ class Factors:
         self.vol_12m = factor_scores['vol_12m'].dropna(how='all')
         self.roe_12m = factor_scores['roe_12m'].dropna(how='all')
 
-        print("Factor Ränge berechnet.")
+        print("Factor Ränge calculated.")
 
 
     def get_factor_weight(self):
-        print("ML factor model wird angewendet, um Gewichte zu erhalten...")
+        print("ML factor model is applied to get weights...")
         # Calculate Factor Weight from ML Model
 
         with open(ML_PICKLE_FILE_PATH, "rb") as f:
@@ -395,8 +395,12 @@ class Factors:
 
         # Average of ML factor weights
         self.factor_weight_av =  self.factor_weight_predicted.copy(deep=True)
-        self.factor_weight_av['WEIGHT_FACTOR_1'] = self.factor_weight_av['WEIGHT_FACTOR_1'].where(self.factor_weight_av['WEIGHT_FACTOR_1'].isna(), self.factor_weight_av['WEIGHT_FACTOR_1'].mean())
-        self.factor_weight_av['WEIGHT_FACTOR_2'] = self.factor_weight_av['WEIGHT_FACTOR_2'].where(self.factor_weight_av['WEIGHT_FACTOR_2'].isna(), 1 - self.factor_weight_av['WEIGHT_FACTOR_1'].mean())
+        self.factor_weight_av['WEIGHT_FACTOR_1'] = self.factor_weight_av['WEIGHT_FACTOR_1'].where(
+                                                            self.factor_weight_av['WEIGHT_FACTOR_1'].isna(),
+                                                            self.factor_weight_av['WEIGHT_FACTOR_1'].mean())
+        self.factor_weight_av['WEIGHT_FACTOR_2'] = self.factor_weight_av['WEIGHT_FACTOR_2'].where(
+                                                            self.factor_weight_av['WEIGHT_FACTOR_2'].isna(),
+                                                            1 - self.factor_weight_av['WEIGHT_FACTOR_1'].mean())
 
         # Summary
         summary = {}
@@ -414,35 +418,33 @@ class Factors:
 
         self.df_weight_summary = pd.DataFrame(summary).T
 
-        print("ML Factor angewendet.")
+        print("ML Factor applied.")
 
     def get_stock_weights(self):
-        print("Stock Weights werden aus Faktogewichten berechnet...")
+        print("Stock Weights are calculated using factor weights...")
         factor_ranks = {f: getattr(self, f"{f}_ranks") for f in self.relevant_factors}
         stock_ranks_factor_1 = factor_ranks[self.relevant_factors[0]]
         stock_ranks_factor_2 = factor_ranks[self.relevant_factors[1]]
 
         # Get Stock weights from factors weights by multiplying ranks with factor weights and rescaling
-        stock_weights_ml = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_predicted)
-        stock_weights_5050 = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_5050)
-        stock_weights_ml_av = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_av)
+        stock_weights_ml = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2,
+                                                      self.factor_weight_predicted)
+        stock_weights_5050 = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2,
+                                                        self.factor_weight_5050)
+        stock_weights_ml_av = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2,
+                                                         self.factor_weight_av)
 
         self.stock_weights_ml = stock_weights_ml.copy(deep=True)
         self.stock_weights_5050 = stock_weights_5050.copy(deep=True)
         self.stock_weights_ml_av = stock_weights_ml_av.copy(deep=True)
-        print("Stock Weights berechnet.")
+        print("Stock Weights calculated.")
 
     def compute_stock_weights(self, stock_ranks_factor_1, stock_ranks_factor_2, factor_weights):
-        # Get Stock weights from factors weights by multiplying ranks with factor weights and rescaling
-        """
-        Berechnet die Aktiengewichte, indem die Faktor-Ranks mit den gegebenen Faktor-Gewichten
-        kombiniert und normalisiert werden.
-        """
-        # Kombiniere die Faktor-Ranks mit den entsprechenden Gewichtungen
         index_weights = self.data.index_weights[stock_ranks_factor_1.index.min():stock_ranks_factor_1.index.max()]
 
         # Integrate factor weights in stock ranks
-        scored_weight = stock_ranks_factor_1.mul(factor_weights['WEIGHT_FACTOR_1'], axis=0) + stock_ranks_factor_2.mul(factor_weights['WEIGHT_FACTOR_2'], axis=0)
+        scored_weight = stock_ranks_factor_1.mul(factor_weights['WEIGHT_FACTOR_1'], axis=0) + stock_ranks_factor_2.mul(
+                                                    factor_weights['WEIGHT_FACTOR_2'], axis=0)
 
         # Rescale
         integrated_weight = index_weights * scored_weight
@@ -468,19 +470,20 @@ class MLModel:
         self.feature_stats = None
 
     def train_model(self):
-        print("Model wird trainiert...")
+        print("Model is trained...")
         if self.params.recalibrate_ML_model:
             x = []
             y = []
             training_end_period = self.training_end_period
-            month_ends = self.factors.mom_ranks.index.to_series().groupby(self.factors.mom_ranks.index.to_period("M")).last()
+            month_ends = self.factors.mom_ranks.index.to_series().groupby(self.factors.mom_ranks.index.
+                                                                          to_period("M")).last()
             month_ends = month_ends[month_ends <= training_end_period]
 
             weight_grid = np.round(np.linspace(0, 1, 11), 2)
             x_features = pd.DataFrame()
             for date in tqdm(month_ends[:-2]):
                 try:
-                    # Rendite Daten
+                    # Return Data
                     next_date = month_ends[month_ends > date].iloc[0]
                     next_mask = (self.returns.index > date) & (self.returns.index <= next_date)
                     next_returns = self.returns.loc[next_mask].dropna(axis=1)
@@ -494,12 +497,12 @@ class MLModel:
                     if len(valid_assets) == 0:
                         continue
 
-                    # Zu standardisierende Variablen
+                    # To be standardized
                     mom = self.factors.perf_12m.loc[date].loc[valid_assets]
                     vol = self.factors.vol_12m.loc[date].loc[valid_assets]
                     roe = self.factors.roe_12m.loc[date].loc[valid_assets]
 
-                    # Nicht-zu-standardisierende Variablen
+                    # To not be standardized
                     rf = self.rf.loc[date]
                     vix = self.vix.loc[date]
                     mom_ranks = self.factors.mom_ranks.loc[date].loc[valid_assets]
@@ -509,7 +512,7 @@ class MLModel:
                     past_30d_returns = self.returns.loc[self.returns.index < date].tail(30)[valid_assets]
                     current_index_weights = self.data.index_weights.loc[date].loc[valid_assets]
 
-                    # Features: einfache Statistik über die Faktorwerte
+                    # Features: Simple Statistics
                     x_features_full = extract_features(mom, vol, roe, rf, vix, past_30d_returns, current_index_weights)
                     x_features = x_features_full[x_features_full['label'].isin(self.ml_training_factors)]
                     features = x_features['value'].to_numpy()
@@ -541,8 +544,8 @@ class MLModel:
             model.fit(x, y)
 
             # Importance Analysis
-            importances = model.feature_importances_
-            self.df_importance = pd.DataFrame(importances, index=x_features['label'].to_list(), columns=["Importance"])
+            importance = model.feature_importances_
+            self.df_importance = pd.DataFrame(importance, index=x_features['label'].to_list(), columns=["Importance"])
 
             # Feature Scores
             f_scores, p_values = f_regression(x, np.array(y))
@@ -551,7 +554,7 @@ class MLModel:
                 'p-Value': pd.Series(p_values, index=x_features['label'].to_list())
             })
 
-            # Zusammenhang visualisieren
+            # Visualize Relationships
             x_df = pd.DataFrame(x, columns=x_features['label'].to_list())
             y_series = pd.Series(y, name="target")
             df = x_df.copy()
@@ -559,14 +562,14 @@ class MLModel:
             sns.pairplot(df)
             plt.show()
 
-            # In Pickle abspeichern
+            # Save in Pickle
             with open(ML_PICKLE_FILE_PATH, "wb") as file:
                 pickle.dump(model, file) # type: ignore
 
-            print("ML-Modell gespeichert.")
+            print("ML-Model saved.")
         else:
-            print("ML-Modell wird nicht gespeichert.")
-        print("Model trainiert.")
+            print("ML-Model could not be saved.")
+        print("Model saved.")
 
 
 class Backtest:
@@ -582,13 +585,12 @@ class Backtest:
         self.df_portfolio_returns = None
         self.bt_performance = None
 
-
     def run_backtest(self):
-        print("Backtest wird gestartet...")
+        print("Backtest is started...")
         returns = self.returns.copy(deep=True)
         returns.index = pd.to_datetime(returns.index)
 
-        # Dictionary der Strategien
+        # Dictionary of Strategies
         strategies = {
             'ML': self.stock_weights_ml,
             '5050': self.stock_weights_5050,
@@ -597,17 +599,17 @@ class Backtest:
 
         month_ends = strategies['ML'].index.to_series().groupby(strategies['ML'].index.to_period("M")).last()
         month_ends = month_ends[month_ends >= self.live_begin_period]
-        portfolio_returns = {name: pd.Series(index=returns[month_ends.min():].index, dtype=float) for name in strategies}
+        portfolio_returns = {name: pd.Series(index=returns[month_ends.min():].index, dtype=float)
+                             for name in strategies}
 
         for date in tqdm(month_ends[:-1]):
-            # print(date)
-            # Bestimme das Rebalancing-Fenster
+            # Get Rebalancing Window
             period_start = date + pd.Timedelta(days=1)
             period_end = month_ends[month_ends > date].iloc[0]
             mask = (returns.index >= period_start) & (returns.index <= period_end)
             period_returns = returns.loc[mask]
 
-            # Für jede Strategie:
+            # For each Strategy
             for name, stock_weights in strategies.items():
                 if date not in stock_weights.index:
                     continue
@@ -621,7 +623,7 @@ class Backtest:
                 perf = period_returns[weights.index].dot(weights)
                 portfolio_returns[name].update(perf.astype(float))
 
-        # Abspeichern und Vergleichen
+        # Save and Compare
         df_returns = pd.DataFrame(portfolio_returns)
 
         df_cum = (1 + df_returns).cumprod()
@@ -653,7 +655,7 @@ class Backtest:
             }
 
         self.bt_performance = pd.DataFrame(performance_dict).T
-        print("Backtest abgeschlossen.")
+        print("Backtest done.")
 
 
 if __name__ == '__main__':
@@ -679,4 +681,3 @@ if __name__ == '__main__':
     # 3. Run Backtest
     backtest_ = Backtest(data = data_instance, factors = factors_, params = params_)
     backtest_.run_backtest()
-
