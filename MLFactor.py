@@ -115,17 +115,17 @@ def extract_features(mom, vol, roe, rf, vix, past_30d_return, current_index_weig
 class Params:
     def __init__(self):
         self.params_dict = {'use_pickle_data' : True,
-                      'update_factor_scores' : True,
-                      'recalibrate_ML_model' : True,
-                      'price_frequency_str' : 'D',
-                      'price_frequency_num' : 252,
-                      'training_start_period' : pd.Timestamp('2007-01-31'),
-                      'training_end_period' : pd.Timestamp('2012-12-31'),
-                      'test_start_period' : pd.Timestamp('2013-01-01'),
-                      'test_end_period' : pd.Timestamp('2025-03-20'),
-                      'ml_training_factors' : ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
-                                                'past_index_return', 'past_index_vola', 'rf', 'vix'],
-                      'relevant_factors' : ['mom', 'roe']}
+                          'update_factor_scores' : False,
+                          'recalibrate_ML_model' : True,
+                          'price_frequency_str' : 'D',
+                          'price_frequency_num' : 252,
+                          'training_start_period' : pd.Timestamp('2007-01-31'),
+                          'training_end_period' : pd.Timestamp('2012-12-31'),
+                          'test_start_period' : pd.Timestamp('2013-01-01'),
+                          'test_end_period' : pd.Timestamp('2025-03-20'),
+                          'ml_training_factors' : ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
+                                                    'past_index_return', 'past_index_vola', 'rf', 'vix'],
+                          'relevant_factors' : ['mom', 'roe']}
 
 class Data:
     def __init__(self, params: Params):
@@ -511,6 +511,7 @@ class MLModel:
 
                     past_30d_returns = self.returns.loc[self.returns.index < date].tail(30)[valid_assets]
                     current_index_weights = self.data.index_weights.loc[date].loc[valid_assets]
+                    next_returns = next_returns[valid_assets]
 
                     # Features: Simple Statistics
                     x_features_full = extract_features(mom, vol, roe, rf, vix, past_30d_returns, current_index_weights)
@@ -527,9 +528,10 @@ class MLModel:
                     for w in weight_grid:
                         score_df = pd.DataFrame({f: factor_ranks[f] for f in relevant})
                         combined_score = score_df.dot([w, 1-w])
-                        combined_score = combined_score.reindex(next_returns.columns)
-                        scored_weights = combined_score / combined_score.sum()
-                        perf = next_returns.dot(scored_weights.infer_objects(copy=False).fillna(0))
+                        combined_score = combined_score.reindex(current_index_weights.index)
+                        integrated_weights = current_index_weights * combined_score
+                        integrated_weights = integrated_weights / integrated_weights.sum()
+                        perf = next_returns.dot(integrated_weights.infer_objects(copy=False).fillna(0))
                         cum_return = (1 + perf).prod()
                         if cum_return > best_return:
                             best_return = cum_return
@@ -699,6 +701,7 @@ if __name__ == '__main__':
                       'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
                                                'past_index_return', 'past_index_vola', 'rf', 'vix']}
     ml_model_1 = initialize_ml_model(update_params_)
+    print(ml_model_1['backtest'].bt_performance)
 
     # 2. Model
     update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
@@ -708,6 +711,7 @@ if __name__ == '__main__':
                       'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
                                               'past_index_return', 'past_index_vola', 'rf', 'vix']}
     ml_model_2 = initialize_ml_model(update_params_)
+    print(ml_model_2['backtest'].bt_performance)
 
     # 3. Model
     update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
@@ -717,4 +721,6 @@ if __name__ == '__main__':
                       'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
                                               'past_index_return', 'past_index_vola', 'rf', 'vix']}
     ml_model_3 = initialize_ml_model(update_params_)
+    print(ml_model_3['backtest'].bt_performance)
+
     pass
