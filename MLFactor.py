@@ -719,18 +719,6 @@ def initialize_ml_model(update_params):
 
 
 if __name__ == '__main__':
-    # 0. Model
-    print("Start Model 0")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2014-12-31'),
-                      'test_start_period': pd.Timestamp('2015-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['rf', 'vix'],
-                      'ml_model' : 'xgboost'}
-    ml_model_0 = initialize_ml_model(update_params_)
-    print(ml_model_0['backtest'].bt_performance)
-    print("End Model 0")
-
     # 1. Model
     print("Start Model 1")
     update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
@@ -863,10 +851,22 @@ if __name__ == '__main__':
     print(ml_model_11['backtest'].bt_performance)
     print("End Model 11")
 
+    # 13. Model (best model so far)
+    print("Start Model 13")
+    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+                      'training_end_period': pd.Timestamp('2014-12-31'),
+                      'test_start_period': pd.Timestamp('2015-01-01'),
+                      'test_end_period': pd.Timestamp('2025-03-20'),
+                      'ml_training_factors': ['rf', 'vix'],
+                      'ml_model' : 'xgboost'}
+    ml_model_0 = initialize_ml_model(update_params_)
+    print(ml_model_0['backtest'].bt_performance)
+    print("End Model 13")
+
 
     # Summarize
     bt_list = []
-    for i in range(0, 12):
+    for i in range(1, 3):
         bt = globals()[f'ml_model_{i}']['backtest'].bt_performance.copy()
         bt['Model'] = f'Model_{i}'
         bt['Strategy'] = bt.index
