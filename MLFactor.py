@@ -3,6 +3,7 @@
 import os
 import pickle
 import subprocess
+import json
 from datetime import datetime
 
 import numpy as np
@@ -721,155 +722,158 @@ def initialize_ml_model(update_params):
 if __name__ == '__main__':
     # 1. Model
     print("Start Model 1")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    update_params_1 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2012-12-31'),
                       'test_start_period': pd.Timestamp('2013-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
                                                'past_index_return', 'past_index_vola', 'rf', 'vix']}
-    ml_model_1 = initialize_ml_model(update_params_)
+    ml_model_1 = initialize_ml_model(update_params_1)
     print(ml_model_1['backtest'].bt_performance)
     print("End Model 1")
 
     # 2. Model
     print("Start Model 2")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    update_params_2 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2014-12-31'),
                       'test_start_period': pd.Timestamp('2015-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
                                               'past_index_return', 'past_index_vola', 'rf', 'vix']}
-    ml_model_2 = initialize_ml_model(update_params_)
+    ml_model_2 = initialize_ml_model(update_params_2)
     print(ml_model_2['backtest'].bt_performance)
     print("End Model 2")
 
     # 3. Model
     print("Start Model 3")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    update_params_3 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2019-12-31'),
                       'test_start_period': pd.Timestamp('2020-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
                                               'past_index_return', 'past_index_vola', 'rf', 'vix']}
-    ml_model_3 = initialize_ml_model(update_params_)
+    ml_model_3 = initialize_ml_model(update_params_3)
     print(ml_model_3['backtest'].bt_performance)
     print("End Model 3")
 
     # 4. Model
     print("Start Model 4")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    update_params_4 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2014-12-31'),
                       'test_start_period': pd.Timestamp('2015-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return']}
-    ml_model_4 = initialize_ml_model(update_params_)
+    ml_model_4 = initialize_ml_model(update_params_4)
     print(ml_model_4['backtest'].bt_performance)
     print("End Model 4")
 
     # 5. Model
     print("Start Model 5")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    update_params_5 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2014-12-31'),
                       'test_start_period': pd.Timestamp('2015-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['past_mom_return', 'past_roe_return']}
-    ml_model_5 = initialize_ml_model(update_params_)
+    ml_model_5 = initialize_ml_model(update_params_5)
     print(ml_model_5['backtest'].bt_performance)
     print("End Model 5")
 
     # 6. Model
     print("Start Model 6")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    update_params_6 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2014-12-31'),
                       'test_start_period': pd.Timestamp('2015-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['rf', 'vix']}
-    ml_model_6 = initialize_ml_model(update_params_)
+    ml_model_6 = initialize_ml_model(update_params_6)
     print(ml_model_6['backtest'].bt_performance)
     print("End Model 6")
 
     # 7. Model
     print("Start Model 7")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    update_params_7 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2014-12-31'),
                       'test_start_period': pd.Timestamp('2015-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['past_index_return', 'past_index_vola']}
-    ml_model_7 = initialize_ml_model(update_params_)
+    ml_model_7 = initialize_ml_model(update_params_7)
     print(ml_model_7['backtest'].bt_performance)
     print("End Model 7")
 
     # 8. Model
     print("Start Model 8")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    update_params_8 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2014-12-31'),
                       'test_start_period': pd.Timestamp('2015-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
                                               'past_index_return', 'past_index_vola', 'rf', 'vix'],
                       'ml_model' : 'RandomForestRegressor'}
-    ml_model_8 = initialize_ml_model(update_params_)
+    ml_model_8 = initialize_ml_model(update_params_8)
     print(ml_model_8['backtest'].bt_performance)
     print("End Model 8")
 
     # 9. Model
     print("Start Model 9")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    update_params_9 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2014-12-31'),
                       'test_start_period': pd.Timestamp('2015-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
                                               'past_index_return', 'past_index_vola', 'rf', 'vix'],
                       'ml_model' : 'lightgbm'}
-    ml_model_9 = initialize_ml_model(update_params_)
+    ml_model_9 = initialize_ml_model(update_params_9)
     print(ml_model_9['backtest'].bt_performance)
     print("End Model 9")
 
     # 10. Model
     print("Start Model 10")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    update_params_10 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2014-12-31'),
                       'test_start_period': pd.Timestamp('2015-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
                                               'past_index_return', 'past_index_vola', 'rf', 'vix'],
                       'ml_model' : 'xgboost'}
-    ml_model_10 = initialize_ml_model(update_params_)
+    ml_model_10 = initialize_ml_model(update_params_10)
     print(ml_model_10['backtest'].bt_performance)
     print("End Model 10")
 
     # 11. Model
     print("Start Model 11")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    update_params_11 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2014-12-31'),
                       'test_start_period': pd.Timestamp('2015-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
                                               'past_index_return', 'past_index_vola', 'rf', 'vix'],
                       'ml_model' : 'catboost'}
-    ml_model_11 = initialize_ml_model(update_params_)
+    ml_model_11 = initialize_ml_model(update_params_11)
     print(ml_model_11['backtest'].bt_performance)
     print("End Model 11")
 
     # 13. Model (best model so far)
-    print("Start Model 13")
-    update_params_ = {'training_start_period': pd.Timestamp('2007-01-31'),
+    print("Start Model 12")
+    update_params_12 = {'training_start_period': pd.Timestamp('2007-01-31'),
                       'training_end_period': pd.Timestamp('2014-12-31'),
                       'test_start_period': pd.Timestamp('2015-01-01'),
                       'test_end_period': pd.Timestamp('2025-03-20'),
                       'ml_training_factors': ['rf', 'vix'],
                       'ml_model' : 'xgboost'}
-    ml_model_0 = initialize_ml_model(update_params_)
-    print(ml_model_0['backtest'].bt_performance)
-    print("End Model 13")
+    ml_model_12 = initialize_ml_model(update_params_12)
+    print(ml_model_12['backtest'].bt_performance)
+    print("End Model 12")
 
 
     # Summarize
     bt_list = []
     for i in range(1, 3):
-        bt = globals()[f'ml_model_{i}']['backtest'].bt_performance.copy()
+        ml_model = globals()[f'ml_model_{i}']
+        update_params_full = globals()[f'update_params_{i}']
+        bt = ml_model['backtest'].bt_performance.copy()
         bt['Model'] = f'Model_{i}'
         bt['Strategy'] = bt.index
+        bt['update_params'] = json.dumps(update_params_full, default=str)
         bt_list.append(bt)
 
     df_all = pd.concat(bt_list, ignore_index=True)
