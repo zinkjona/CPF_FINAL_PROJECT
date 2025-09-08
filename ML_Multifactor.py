@@ -183,15 +183,10 @@ def run_ml_backtests(model_definitions, params):
         bt_perf = ml_model['backtest'].bt_performance
 
         # Diese Logik ist unabhängig von einem externen Loop!
-        ml_row      = bt_perf.loc[bt_perf['index'] == 'ML', 'Average Return']
-        avg_ml_row  = bt_perf.loc[bt_perf['index'] == 'AVG_ML', 'Average Return']
-        fivefifty_row=bt_perf.loc[bt_perf['index'] == '5050', 'Average Return']
-        index_row   = bt_perf.loc[bt_perf['index'] == 'INDEX', 'Average Return']
-
-        ml_val = ml_row.values[0] if len(ml_row) else None
-        avg_ml_val = avg_ml_row.values[0] if len(avg_ml_row) else None
-        fivefifty_val = fivefifty_row.values[0] if len(fivefifty_row) else None
-        index_val = index_row.values[0] if len(index_row) else None
+        ml_val = bt_perf.loc['ML', 'Average Return']
+        avg_ml_val = bt_perf.loc['AVG_ML', 'Average Return']
+        fivefifty_val = bt_perf.loc['5050', 'Average Return']
+        index_val = bt_perf.loc['INDEX', 'Average Return']
 
         excess = {
             'ML_minus_AVG_ML': ml_val - avg_ml_val if (ml_val is not None and avg_ml_val is not None) else None,
@@ -214,6 +209,14 @@ def run_ml_backtests(model_definitions, params):
         importance_dict = imp_stats["Importance"].to_dict()
         df_importance_final = pd.DataFrame([importance_dict], index=[model_name])
 
+        # --- Goodness of model
+        good_of_model = ml_model['trained_ml_model'].goodness_of_model
+        good_of_model = good_of_model.loc[good_of_model['Metric'] == 'R² on training']
+        good_of_model.index = good_of_model['Metric']
+        good_of_model.drop(columns=['Metric'], inplace=True)
+        gm_dict = good_of_model["Value"].to_dict()
+        df_goodness_of_model_final = pd.DataFrame([gm_dict], index=[model_name])
+
 
         # Gather all outputs for this model/scenario in a dedicated results dictionary
         specific_ml_results = {
@@ -226,7 +229,8 @@ def run_ml_backtests(model_definitions, params):
             'BackTest': ml_model['backtest'],
             'ExcessReturns': df_excess_return,
             'FeatureStats': df_pvalue_final,
-            'FeatureImportance': df_importance_final
+            'FeatureImportance': df_importance_final,
+            'GoodnessOfModel': df_goodness_of_model_final
         }
 
         # Save the results for further analysis
