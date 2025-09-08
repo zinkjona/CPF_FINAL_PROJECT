@@ -508,7 +508,7 @@ class GetStockScores:
             }
 
             with open(FACTOR_SCORES_PICKLE_FILE_PATH, 'wb') as file:
-                pickle.dump(stock_scores, file)
+                pickle.dump(stock_scores, file)   # type: ignore
 
         else:
             # ===== Load from disk (no recalculation) =====
@@ -772,7 +772,7 @@ class ApplyMLModel:
                 pred = max(0, min(1, pred))
                 weights.loc[date] = [pred, 1 - pred]
 
-            except Exception:  # Catch any error (e.g. ValueError, KeyError, etc.) and assign 50/50
+            except ValueError:  # Catch any error (e.g. ValueError, KeyError, etc.) and assign 50/50
                 weights.loc[date] = [0.5, 0.5]
 
         # Store predictions
@@ -891,7 +891,7 @@ class CalculateBacktest:
 
         Sets attributes:
             - returns: Returns DataFrame (date x stock)
-            - price_frequency_num: Rebalancing frequency (eg. 21: monthly)
+            - price_frequency_num: Rebalancing frequency (e.g. 21: monthly)
             - test_start_period, test_end_period: Backtest start/end dates
             - stock_weights_ml, stock_weights_5050, stock_weights_ml_av, stock_weights_index:
                   DataFrames of (date x stock) weights for each strategy
