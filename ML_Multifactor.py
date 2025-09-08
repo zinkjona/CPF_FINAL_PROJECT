@@ -211,7 +211,7 @@ def run_ml_backtests(model_definitions, params):
 
         # --- Extract Feature Importance
         imp_stats = ml_model['trained_ml_model'].df_importance
-        importance_dict = dict(zip(imp_stats['index'], imp_stats['Importance']))
+        importance_dict = imp_stats["Importance"].to_dict()
         df_importance_final = pd.DataFrame([importance_dict], index=[model_name])
 
 
