@@ -1,11 +1,7 @@
 # TODO: optimize model setting (GridSearchCV or RandomizedSearchCV) in xgboost
 # TODO: factor weights over time plotting
 
-import os
 import pickle
-import subprocess
-import json
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -13,9 +9,12 @@ from tqdm import tqdm
 
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.feature_selection import f_regression
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+
 import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostRegressor
+
 
 
 DATA_PICKLE_FILE_PATH = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/inputs/data.pkl'
@@ -24,28 +23,42 @@ FACTOR_SCORES_PICKLE_FILE_PATH = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final 
 NOTEBOOK_PATH = 'G:/TEC101/ALLE/Zink/40_CPF Program/CPF Final Project/Final Project Results.ipynb'
 HTML_OUTPUT_DIR = 'G:/TEC101/ALLE/Zink/40_CPF Program/Final Project Output/'
 
-def export_notebook_to_html():
-    """
-     	Exports a predefined notebook to HTML with a timestamp.
-    """
-    if not os.path.isfile(NOTEBOOK_PATH):
-        raise FileNotFoundError(f"❌ Notebook not found: {NOTEBOOK_PATH}")
 
-    notebook_name = os.path.splitext(os.path.basename(NOTEBOOK_PATH))[0]
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_filename = f"{notebook_name}_{timestamp}.html"
+def initialize_ml_model(params, update_params):
+    # 1. Define Params
+    params.update(update_params)
 
-    command = [
-        "jupyter", "nbconvert",
-        "--to", "html",
-        "--output", output_filename,
-        "--output-dir", HTML_OUTPUT_DIR,
-        NOTEBOOK_PATH
-    ]
+    # 2. Load GetData
+    data_ = GetData(params=params)
+    data_.get_data()
+    data_.get_descriptive_stats()
 
-    print("🚀 Export Notebook to HTML...")
-    subprocess.run(command, check=True)
-    print(f"✅ Export successful: {os.path.join(HTML_OUTPUT_DIR, output_filename)}")
+    # 3. Rank Stocks
+    stock_scores_ = GetStockScores(data=data_, params=params)
+    stock_scores_.get_stock_scores()
+
+    # 4. Train Model
+    trained_ml_model_ = TrainMLModel(stock_scores=stock_scores_, data=data_, params=params)
+    trained_ml_model_.train_model()
+
+    # 5. Apply Model
+    applied_model_ = ApplyMLModel(data=data_, params=params, stock_scores=stock_scores_,
+                                  trained_model=trained_ml_model_)
+    applied_model_.get_factor_weight()
+    applied_model_.get_stock_weights()
+
+    # 6. Run CalculateBacktest
+    backtest_ = CalculateBacktest(data=data_, params=params, applied_model=applied_model_)
+    backtest_.run_backtest()
+
+    summary_dict = {'params': params,
+                    'data': data_,
+                    'stock_scores': stock_scores_,
+                    'trained_ml_model': trained_ml_model_,
+                    'applied_model': applied_model_,
+                    'backtest': backtest_}
+
+    return summary_dict
 
 def factor_return(factor_values, label_order, current_index_weights, past_30d_return):
     weights = pd.qcut(factor_values, q=5, labels=label_order).astype(int) * current_index_weights
@@ -116,29 +129,38 @@ def extract_features(mom, vol, roe, rf, vix, past_30d_return, current_index_weig
     df = pd.DataFrame.from_dict(features, orient='index')
     return df
 
+def run_ml_backtests(model_definitions, params):
+    results = []
+    for i, model_def in enumerate(model_definitions, start=1):
+        model_name = model_def['name']
+        updated_params = {k: pd.Timestamp(v) if 'period' in k else v
+                          for k, v in model_def.items() if k != 'name'}
 
-class Params:
-    def __init__(self):
-        self.params_dict = {'use_pickle_data' : True,
-                          'update_factor_scores' : False,
-                          'price_frequency_str' : 'D',
-                          'price_frequency_num' : 252,
-                          'training_start_period' : pd.Timestamp('2007-01-31'),
-                          'training_end_period' : pd.Timestamp('2012-12-31'),
-                          'test_start_period' : pd.Timestamp('2013-01-01'),
-                          'test_end_period' : pd.Timestamp('2025-03-20'),
-                          'ml_training_factors' : ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
-                                                    'past_index_return', 'past_index_vola', 'rf', 'vix'],
-                          'relevant_factors' : ['mom', 'roe'],
-                            'ml_model' : 'RandomForestRegressor'}
+        print(f"{'='*30}\n🚀 Start {model_name}\n{'='*30}")
+        ml_model = initialize_ml_model(params, updated_params)
+        specific_ml_results = {
+            'Model': model_name,
+            'Params': ml_model['params'],
+            'GetData': ml_model['data'],
+            'GetStockScores': ml_model['stock_scores'],
+            'TrainedMLModel': ml_model['trained_ml_model'],
+            'AppliedModel': ml_model['applied_model'],
+            'BackTest': ml_model['backtest'],
+            'Goodness of Model': ml_model['trained_ml_model'].goodness_of_model,
+            'Feature Importance' : ml_model['trained_ml_model'].df_importance,
+            'Feature Stats' : ml_model['trained_ml_model'].feature_stats}
+
+        results.append(specific_ml_results)
+        print(f"✅ {model_name} done\n")
+
+    return results
 
 
-
-class Data:
-    def __init__(self, params: Params):
-        self.price_frequency_str = params.params_dict['price_frequency_str']
-        self.use_pickle_data = params.params_dict['use_pickle_data']
-        self.price_frequency_num = params.params_dict['price_frequency_num']
+class GetData:
+    def __init__(self, params: dict):
+        self.price_frequency_str = params['price_frequency_str']
+        self.use_pickle_data = params['use_pickle_data']
+        self.price_frequency_num = params['price_frequency_num']
 
         self.stock_prices = None
         self.index_weights = None
@@ -149,7 +171,7 @@ class Data:
         self.descriptive_stats = None
 
     def get_data(self):
-        print("Data is load...")
+        print("GetData is load...")
 
         if self.use_pickle_data:
 
@@ -212,7 +234,7 @@ class Data:
             rf_vix.drop(columns=['Date'], inplace=True)
             rf_vix.index = pd.to_datetime(rf_vix.index)
 
-            # 5. Create Data Dictionary
+            # 5. Create GetData Dictionary
             data_dictionary = {'stock_prices' : stock_prices,
                                'index_weights' : index_weights,
                                'roe' : roe,
@@ -231,7 +253,7 @@ class Data:
         self.returns = data_dictionary['stock_prices'].pct_change(fill_method=None)
 
 
-        print("Data load.")
+        print("GetData load.")
 
     def get_descriptive_stats(self):
         returns = self.returns.dropna(how='all', axis=1)
@@ -267,9 +289,9 @@ class Data:
         }
 
 
-class StockScores:
-    def __init__(self, data: Data, params: Params):
-        self.price_frequency_num = params.params_dict['price_frequency_num']
+class GetStockScores:
+    def __init__(self, data: GetData, params: dict):
+        self.price_frequency_num = params['price_frequency_num']
         self.params = params
         self.data = data
         self.roe = data.roe
@@ -277,8 +299,8 @@ class StockScores:
         self.rf = data.rf
         self.vix = data.vix
         self.returns = data.returns
-        self.update_factor_scores = params.params_dict['update_factor_scores']
-        self.relevant_factors = params.params_dict['relevant_factors']
+        self.update_factor_scores = params['update_factor_scores']
+        self.relevant_factors = params['relevant_factors']
 
         self.mom_ranks = None
         self.vol_ranks = None
@@ -287,12 +309,12 @@ class StockScores:
         self.vol_12m = None
         self.roe_12m = None
 
-    def get_factor_scores(self):
-        print("Factor Ranks are calculated")
+    def get_stock_scores(self):
+        print("Stock Scores are calculated")
 
-        factor_scores = {}
+        stock_scores = {}
         if self.update_factor_scores:
-            # 1.1 Raw Factor Scores
+            # 1.1 Raw Stock Scores
             perf_12m = self.stock_prices / self.stock_prices.shift(self.price_frequency_num) - 1
             vol_12m = self.returns.rolling(self.price_frequency_num).std() * np.sqrt(self.price_frequency_num)
             roe_12m = self.roe.rolling(self.price_frequency_num).mean()
@@ -328,7 +350,7 @@ class StockScores:
 
 
             # Save results in Dictionary
-            factor_scores = {
+            stock_scores = {
                 'mom_ranks': mom_ranks,
                 'vol_ranks': vol_ranks,
                 'roe_ranks': roe_ranks,
@@ -338,39 +360,41 @@ class StockScores:
             }
 
             with open(FACTOR_SCORES_PICKLE_FILE_PATH, 'wb') as file:
-                pickle.dump(factor_scores, file) # type: ignore
+                pickle.dump(stock_scores, file) # type: ignore
 
         else:
             with open(FACTOR_SCORES_PICKLE_FILE_PATH, 'rb') as file:
-                factor_scores = pickle.load(file)
+                stock_scores = pickle.load(file)
 
-        self.mom_ranks = factor_scores['mom_ranks'].dropna(how='all')
-        self.vol_ranks = factor_scores['vol_ranks'].dropna(how='all')
-        self.roe_ranks = factor_scores['roe_ranks'].dropna(how='all')
+        self.mom_ranks = stock_scores['mom_ranks'].dropna(how='all')
+        self.vol_ranks = stock_scores['vol_ranks'].dropna(how='all')
+        self.roe_ranks = stock_scores['roe_ranks'].dropna(how='all')
 
-        self.perf_12m = factor_scores['perf_12m'].dropna(how='all')
-        self.vol_12m = factor_scores['vol_12m'].dropna(how='all')
-        self.roe_12m = factor_scores['roe_12m'].dropna(how='all')
+        self.perf_12m = stock_scores['perf_12m'].dropna(how='all')
+        self.vol_12m = stock_scores['vol_12m'].dropna(how='all')
+        self.roe_12m = stock_scores['roe_12m'].dropna(how='all')
 
-        print("Factor Ränge calculated.")
+        print("Stock Scores calculated.")
 
 
 class TrainMLModel:
-    def __init__(self, stock_scores: StockScores, data: Data, params: Params):
+    def __init__(self, stock_scores: GetStockScores, data: GetData, params: dict):
         self.stock_scores = stock_scores
         self.data = data
         self.params = params
         self.returns = data.returns
         self.rf = data.rf
         self.vix = data.vix
-        self.training_start_period = params.params_dict['training_start_period']
-        self.training_end_period = params.params_dict['training_end_period']
-        self.ml_training_factors = params.params_dict['ml_training_factors']
-        self.relevant_factors = params.params_dict['relevant_factors']
+        self.training_start_period = params['training_start_period']
+        self.training_end_period = params['training_end_period']
+        self.ml_training_factors = params['ml_training_factors']
+        self.relevant_factors = params['relevant_factors']
 
+        self.ml_model = None
+        self.goodness_of_model = None
         self.df_importance = None
         self.feature_stats = None
-        self.ml_model = None
+
 
     def train_model(self):
         print("Model is trained...")
@@ -385,7 +409,7 @@ class TrainMLModel:
         x_features = pd.DataFrame()
         for date in tqdm(month_ends[:-2]):
             try:
-                # Return Data
+                # Return GetData
                 next_date = month_ends[month_ends > date].iloc[0]
                 next_mask = (self.returns.index > date) & (self.returns.index <= next_date)
                 next_returns = self.returns.loc[next_mask].dropna(axis=1)
@@ -444,34 +468,49 @@ class TrainMLModel:
             except ValueError:
                 continue
 
-        if self.params.params_dict['ml_model'] == 'RandomForestRegressor':
+        if self.params['ml_model'] == 'RandomForestRegressor':
             model = RandomForestRegressor(n_estimators=100, random_state=42)
-        elif self.params.params_dict['ml_model'] == 'lightgbm':
+        elif self.params['ml_model'] == 'lightgbm':
             model = lgb.LGBMRegressor(n_estimators=100, random_state=42)
-        elif self.params.params_dict['ml_model'] == 'xgboost':
+        elif self.params['ml_model'] == 'xgboost':
             model = xgb.XGBRegressor(n_estimators=100, random_state=42, use_label_encoder=False, eval_metric='rmse')
-        elif self.params.params_dict['ml_model'] == 'catboost':
+        elif self.params['ml_model'] == 'catboost':
             model = CatBoostRegressor(iterations=100, random_seed=42, verbose=0)
         else:
-            raise ValueError(f"Unknown ML-Model-Name: {self.params.params_dict['ml_model']}")
+            raise ValueError(f"Unknown ML-Model-Name: {self.params['ml_model']}")
+
         model.fit(x, y)
+        y_train_pred = model.predict(x)
+
+        # Analyze goodness of model
+        r2 = r2_score(y, y_train_pred)
+        mse = mean_squared_error(y, y_train_pred)
+        mae = mean_absolute_error(y, y_train_pred)
+
+        goodness_of_model = pd.DataFrame({
+                                'Metric': ['R² on training', 'MSE on training', 'MAE on training'],
+                                'Value': [r2, mse, mae]
+                                })
 
         # Importance Analysis
         importance = model.feature_importances_
-        self.df_importance = pd.DataFrame(importance, index=x_features['label'].to_list(), columns=["Importance"])
+        df_importance = pd.DataFrame(importance, index=x_features['label'].to_list(), columns=["Importance"])
 
         # Feature Scores
         f_scores, p_values = f_regression(x, np.array(y))
-        self.feature_stats = pd.DataFrame({
+        feature_stats = pd.DataFrame({
             'F-Score': pd.Series(f_scores, index=x_features['label'].to_list()),
             'p-Value': pd.Series(p_values, index=x_features['label'].to_list())
         })
 
         self.ml_model = model
+        self.goodness_of_model = goodness_of_model
+        self.df_importance = df_importance
+        self.feature_stats = feature_stats
 
 
 class ApplyMLModel:
-    def __init__(self, data: Data, params: Params, stock_scores: StockScores, trained_model: TrainMLModel):
+    def __init__(self, data: GetData, params: dict, stock_scores: GetStockScores, trained_model: TrainMLModel):
         self.params = params
         self.data = data
         self.mom_ranks = stock_scores.mom_ranks
@@ -513,7 +552,7 @@ class ApplyMLModel:
                 current_index_weights = self.data.index_weights.loc[date]
 
                 x_features_full = extract_features(mom, vol, roe, rf, vix, past_30d_returns, current_index_weights)
-                x_features = x_features_full[x_features_full['label'].isin(self.params.params_dict['ml_training_factors'])]
+                x_features = x_features_full[x_features_full['label'].isin(self.params['ml_training_factors'])]
                 features = x_features['value'].to_numpy()
                 features = features.reshape(1, -1)
 
@@ -557,9 +596,9 @@ class ApplyMLModel:
 
     def get_stock_weights(self):
         print("Stock Weights are calculated using factor weights...")
-        factor_ranks = {f: getattr(self, f"{f}_ranks") for f in self.params.params_dict['relevant_factors']}
-        stock_ranks_factor_1 = factor_ranks[self.params.params_dict['relevant_factors'][0]]
-        stock_ranks_factor_2 = factor_ranks[self.params.params_dict['relevant_factors'][1]]
+        factor_ranks = {f: getattr(self, f"{f}_ranks") for f in self.params['relevant_factors']}
+        stock_ranks_factor_1 = factor_ranks[self.params['relevant_factors'][0]]
+        stock_ranks_factor_2 = factor_ranks[self.params['relevant_factors'][1]]
 
         # Get Stock weights from stock_scores weights by multiplying ranks with factor weights and rescaling
         stock_weights_ml = self.compute_stock_weights(stock_ranks_factor_1, stock_ranks_factor_2,
@@ -595,13 +634,13 @@ class ApplyMLModel:
         return integrated_weight.copy(deep=True)
 
 
-class Backtest:
-    def __init__(self, data: Data, params: Params, applied_model: ApplyMLModel):
+class CalculateBacktest:
+    def __init__(self, data: GetData, params: dict, applied_model: ApplyMLModel):
         self.returns = data.returns
 
-        self.price_frequency_num = params.params_dict['price_frequency_num']
-        self.test_start_period = params.params_dict['test_start_period']
-        self.test_end_period = params.params_dict['test_end_period']
+        self.price_frequency_num = params['price_frequency_num']
+        self.test_start_period = params['test_start_period']
+        self.test_end_period = params['test_end_period']
 
         self.stock_weights_ml = applied_model.stock_weights_ml
         self.stock_weights_5050 = applied_model.stock_weights_5050
@@ -612,7 +651,7 @@ class Backtest:
         self.bt_performance = None
 
     def run_backtest(self):
-        print("Backtest is started...")
+        print("CalculateBacktest is started...")
         returns = self.returns.copy(deep=True)
         returns.index = pd.to_datetime(returns.index)
 
@@ -664,7 +703,7 @@ class Backtest:
 
         self.df_portfolio_returns = df_returns.copy(deep=True)
 
-        # 5.  Calculate Backtest Performance measures
+        # 5.  Calculate CalculateBacktest Performance measures
         performance_dict = {}
         for strat in ['ML', '5050', 'AVG_ML', 'INDEX']:
             strat_returns = self.df_portfolio_returns[strat].dropna()
@@ -686,42 +725,7 @@ class Backtest:
             }
 
         self.bt_performance = pd.DataFrame(performance_dict).T
-        print("Backtest done.")
-
-def initialize_ml_model(params, update_params):
-    # 1. Define Params
-    params.update(update_params)
-
-    # 2. Load Data
-    data_ = Data(params = params)
-    data_.get_data()
-    data_.get_descriptive_stats()
-
-    # 3. Rank Stocks
-    stock_scores_ = StockScores(data = data_, params = params)
-    stock_scores_.get_factor_scores()
-
-    # 4. Train Model
-    trained_ml_model_ = TrainMLModel(stock_scores=stock_scores_, data = data_, params=params)
-    trained_ml_model_.train_model()
-
-    # 5. Apply Model
-    applied_model_ = ApplyMLModel(data = data_, params=params, stock_scores=stock_scores_, trained_model=trained_ml_model_)
-    applied_model_.get_factor_weight()
-    applied_model_.get_stock_weights()
-
-    # 6. Run Backtest
-    backtest_ = Backtest(data = data_, params = params, applied_model=applied_model_)
-    backtest_.run_backtest()
-
-    summary_dict = {'params' : params,
-                    'data' : data_,
-                    'stock_scores' : stock_scores_,
-                    'train_ml_model_' : trained_ml_model_,
-                    'applied_model' : applied_model_,
-                    'backtest' : backtest_}
-
-    return summary_dict
+        print("CalculateBacktest done.")
 
 
 if __name__ == '__main__':
@@ -738,163 +742,19 @@ if __name__ == '__main__':
                'relevant_factors': ['mom', 'roe'],
                'ml_model': 'RandomForestRegressor'}
 
-    # 1. Model
-    print("Start Model 1")
-    update_params_1 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2012-12-31'),
-                      'test_start_period': pd.Timestamp('2013-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
-                                               'past_index_return', 'past_index_vola', 'rf', 'vix']}
-    ml_model_1 = initialize_ml_model(params_, update_params_1)
-    print(ml_model_1['backtest'].bt_performance)
-    print("End Model 1")
+    # 2. Set model specifications
+    model_definitions_ = [
+        dict(name="Model 1",
+             training_end_period='2012-12-31',
+             test_start_period='2013-01-01',
+             ml_training_factors=['mom_roe_corr', 'past_mom_return', 'past_roe_return', 'past_index_return',
+                                  'past_index_vola', 'rf', 'vix']),
+        dict(name="Model 2",
+             training_end_period='2014-12-31',
+             test_start_period='2015-01-01',
+             ml_training_factors=['mom_roe_corr', 'past_mom_return', 'past_roe_return', 'past_index_return',
+                                  'past_index_vola', 'rf', 'vix'])]
 
-    # 2. Model
-    print("Start Model 2")
-    update_params_2 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2014-12-31'),
-                      'test_start_period': pd.Timestamp('2015-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
-                                              'past_index_return', 'past_index_vola', 'rf', 'vix']}
-    ml_model_2 = initialize_ml_model(params_, update_params_2)
-    print(ml_model_2['backtest'].bt_performance)
-    print("End Model 2")
-
-    # 3. Model
-    print("Start Model 3")
-    update_params_3 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2019-12-31'),
-                      'test_start_period': pd.Timestamp('2020-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
-                                              'past_index_return', 'past_index_vola', 'rf', 'vix']}
-    ml_model_3 = initialize_ml_model(params_, update_params_3)
-    print(ml_model_3['backtest'].bt_performance)
-    print("End Model 3")
-
-    # 4. Model
-    print("Start Model 4")
-    update_params_4 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2014-12-31'),
-                      'test_start_period': pd.Timestamp('2015-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return']}
-    ml_model_4 = initialize_ml_model(params_, update_params_4)
-    print(ml_model_4['backtest'].bt_performance)
-    print("End Model 4")
-
-    # 5. Model
-    print("Start Model 5")
-    update_params_5 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2014-12-31'),
-                      'test_start_period': pd.Timestamp('2015-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['past_mom_return', 'past_roe_return']}
-    ml_model_5 = initialize_ml_model(params_, update_params_5)
-    print(ml_model_5['backtest'].bt_performance)
-    print("End Model 5")
-
-    # 6. Model
-    print("Start Model 6")
-    update_params_6 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2014-12-31'),
-                      'test_start_period': pd.Timestamp('2015-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['rf', 'vix']}
-    ml_model_6 = initialize_ml_model(params_, update_params_6)
-    print(ml_model_6['backtest'].bt_performance)
-    print("End Model 6")
-
-    # 7. Model
-    print("Start Model 7")
-    update_params_7 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2014-12-31'),
-                      'test_start_period': pd.Timestamp('2015-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['past_index_return', 'past_index_vola']}
-    ml_model_7 = initialize_ml_model(params_, update_params_7)
-    print(ml_model_7['backtest'].bt_performance)
-    print("End Model 7")
-
-    # 8. Model
-    print("Start Model 8")
-    update_params_8 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2014-12-31'),
-                      'test_start_period': pd.Timestamp('2015-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
-                                              'past_index_return', 'past_index_vola', 'rf', 'vix'],
-                      'ml_model' : 'RandomForestRegressor'}
-    ml_model_8 = initialize_ml_model(params_, update_params_8)
-    print(ml_model_8['backtest'].bt_performance)
-    print("End Model 8")
-
-    # 9. Model
-    print("Start Model 9")
-    update_params_9 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2014-12-31'),
-                      'test_start_period': pd.Timestamp('2015-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
-                                              'past_index_return', 'past_index_vola', 'rf', 'vix'],
-                      'ml_model' : 'lightgbm'}
-    ml_model_9 = initialize_ml_model(params_, update_params_9)
-    print(ml_model_9['backtest'].bt_performance)
-    print("End Model 9")
-
-    # 10. Model
-    print("Start Model 10")
-    update_params_10 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2014-12-31'),
-                      'test_start_period': pd.Timestamp('2015-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
-                                              'past_index_return', 'past_index_vola', 'rf', 'vix'],
-                      'ml_model' : 'xgboost'}
-    ml_model_10 = initialize_ml_model(params_, update_params_10)
-    print(ml_model_10['backtest'].bt_performance)
-    print("End Model 10")
-
-    # 11. Model
-    print("Start Model 11")
-    update_params_11 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2014-12-31'),
-                      'test_start_period': pd.Timestamp('2015-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
-                                              'past_index_return', 'past_index_vola', 'rf', 'vix'],
-                      'ml_model' : 'catboost'}
-    ml_model_11 = initialize_ml_model(params_, update_params_11)
-    print(ml_model_11['backtest'].bt_performance)
-    print("End Model 11")
-
-    # 13. Model (best model so far)
-    print("Start Model 12")
-    update_params_12 = {'training_start_period': pd.Timestamp('2007-01-31'),
-                      'training_end_period': pd.Timestamp('2014-12-31'),
-                      'test_start_period': pd.Timestamp('2015-01-01'),
-                      'test_end_period': pd.Timestamp('2025-03-20'),
-                      'ml_training_factors': ['rf', 'vix'],
-                      'ml_model' : 'xgboost'}
-    ml_model_12 = initialize_ml_model(params_, update_params_12)
-    print(ml_model_12['backtest'].bt_performance)
-    print("End Model 12")
-
-
-    # Summarize
-    bt_list = []
-    for i in range(1, 13):
-        ml_model = globals()[f'ml_model_{i}']
-        update_params_full = globals()[f'update_params_{i}']
-        bt = ml_model['backtest'].bt_performance.copy()
-        bt['Model'] = f'Model_{i}'
-        bt['Strategy'] = bt.index
-        bt['update_params'] = json.dumps(update_params_full, default=str)
-        bt_list.append(bt)
-
-    df_all = pd.concat(bt_list, ignore_index=True)
-    timestamp_ = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    excel_path = fr'G:\TEC101\ALLE\Zink\40_CPF Program\Ergebnisse\backtest_summary_{timestamp_}.xlsx'
-    df_all.to_excel(excel_path, index=False)
+    # 3. Run models
+    bt_list_ = run_ml_backtests(model_definitions = model_definitions_, params = params_)
+    pass
