@@ -178,6 +178,43 @@ def run_ml_backtests(model_definitions, params):
         # Execute the full ML workflow for the current scenario
         ml_model = initialize_ml_model(params, updated_params)
 
+        # ---- Deltas berechnen ----
+        # Annahme: bt_performance ist ein DataFrame und enthält Strategien als Index oder Spalte "index"
+        bt_perf = ml_model['backtest'].bt_performance
+
+        # Diese Logik ist unabhängig von einem externen Loop!
+        ml_row      = bt_perf.loc[bt_perf['index'] == 'ML', 'Average Return']
+        avg_ml_row  = bt_perf.loc[bt_perf['index'] == 'AVG_ML', 'Average Return']
+        fivefifty_row=bt_perf.loc[bt_perf['index'] == '5050', 'Average Return']
+        index_row   = bt_perf.loc[bt_perf['index'] == 'INDEX', 'Average Return']
+
+        ml_val = ml_row.values[0] if len(ml_row) else None
+        avg_ml_val = avg_ml_row.values[0] if len(avg_ml_row) else None
+        fivefifty_val = fivefifty_row.values[0] if len(fivefifty_row) else None
+        index_val = index_row.values[0] if len(index_row) else None
+
+        excess = {
+            'ML_minus_AVG_ML': ml_val - avg_ml_val if (ml_val is not None and avg_ml_val is not None) else None,
+            'ML_minus_5050'  : ml_val - fivefifty_val if (ml_val is not None and fivefifty_val is not None) else None,
+            'ML_minus_INDEX' : ml_val - index_val if (ml_val is not None and index_val is not None) else None
+        }
+        df_excess_return = pd.DataFrame([excess], index=[model_name])
+
+        # --------------------------------------------
+
+        # --- Extract Feature Stats p-Values
+        feature_stats = ml_model['trained_ml_model'].feature_stats
+        pvalue_dict = feature_stats['p-Value'].to_dict()
+        df_pvalue_final = pd.DataFrame([pvalue_dict], index=[model_name])
+
+        # ------------------------------------------------------
+
+        # --- Extract Feature Importance
+        imp_stats = ml_model['trained_ml_model'].df_importance
+        importance_dict = dict(zip(imp_stats['index'], imp_stats['Importance']))
+        df_importance_final = pd.DataFrame([importance_dict], index=[model_name])
+
+
         # Gather all outputs for this model/scenario in a dedicated results dictionary
         specific_ml_results = {
             'Model': model_name,
@@ -186,7 +223,10 @@ def run_ml_backtests(model_definitions, params):
             'GetStockScores': ml_model['stock_scores'],
             'TrainedMLModel': ml_model['trained_ml_model'],
             'AppliedModel': ml_model['applied_model'],
-            'BackTest': ml_model['backtest']
+            'BackTest': ml_model['backtest'],
+            'ExcessReturns': df_excess_return,
+            'FeatureStats': df_pvalue_final,
+            'FeatureImportance': df_importance_final
         }
 
         # Save the results for further analysis
