@@ -145,10 +145,7 @@ def run_ml_backtests(model_definitions, params):
             'GetStockScores': ml_model['stock_scores'],
             'TrainedMLModel': ml_model['trained_ml_model'],
             'AppliedModel': ml_model['applied_model'],
-            'BackTest': ml_model['backtest'],
-            'Goodness of Model': ml_model['trained_ml_model'].goodness_of_model,
-            'Feature Importance' : ml_model['trained_ml_model'].df_importance,
-            'Feature Stats' : ml_model['trained_ml_model'].feature_stats}
+            'BackTest': ml_model['backtest']}
 
         results.append(specific_ml_results)
         print(f"✅ {model_name} done\n")
@@ -651,7 +648,7 @@ class CalculateBacktest:
         self.bt_performance = None
 
     def run_backtest(self):
-        print("CalculateBacktest is started...")
+        print("Calculate Backtest is started...")
         returns = self.returns.copy(deep=True)
         returns.index = pd.to_datetime(returns.index)
 
@@ -725,7 +722,7 @@ class CalculateBacktest:
             }
 
         self.bt_performance = pd.DataFrame(performance_dict).T
-        print("CalculateBacktest done.")
+        print("Calculate Backtest done.")
 
 
 if __name__ == '__main__':
@@ -756,5 +753,5 @@ if __name__ == '__main__':
                                   'past_index_vola', 'rf', 'vix'])]
 
     # 3. Run models
-    bt_list_ = run_ml_backtests(model_definitions = model_definitions_, params = params_)
+    results_ = run_ml_backtests(model_definitions = model_definitions_, params = params_)
     pass
