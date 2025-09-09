@@ -2,6 +2,7 @@ import pickle
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.feature_selection import f_regression
@@ -474,6 +475,12 @@ class GetStockScores:
         self.factor_returns_cum = None
         self.factor_returns_cum_full = None
 
+        self.vix_excess_return_figs = None
+        self.rf_excess_returns_figs = None
+        self.vix_fig = None
+        self.rf_fig = None
+        self.rf_vix_fig = None
+
     def get_stock_scores(self):
         """
         Calculates or loads (if previously cached) factor-based stock scores:
@@ -616,10 +623,80 @@ class GetStockScores:
         rf = self.rf[factor_returns.index.min():factor_returns.index.max()].reindex(factor_returns.index)
         factor_returns_cum_full = pd.concat([factor_returns_cum, vix, rf], axis=1)
 
+        # Visualization
+        excess_returns = factor_returns[['mom', 'vol', 'roe']].subtract(factor_returns['index'], axis=0)
+        excess_returns.columns = ['mom', 'vol', 'roe']
+        cum_excess_returns = (1 + excess_returns).cumprod()
+        df = pd.concat([cum_excess_returns,factor_returns_cum_full[['VIX', 'RF']]], axis=1)
+
+        # Plot 1: Excess Return vs. VIX
+        factors = ['mom', 'roe', 'vol']
+        colors = ['red', 'blue', 'green']
+
+        vix_excess_return_figs = {}
+
+        for factor, color in zip(factors, colors):
+            fig, ax1 = plt.subplots(figsize=(14, 6))
+            ax1.plot(df.index, df[factor], color=color, label=factor)
+            ax1.set_ylabel('Cumulative Excess Returns')
+            ax1.legend(loc='upper left')
+            ax1.set_title(f'{factor.upper()} Excess Returns und VIX')
+
+            ax2 = ax1.twinx()
+            ax2.plot(df.index, df['VIX'], color='purple', linestyle='--', label='VIX')
+            ax2.set_ylabel('VIX')
+            ax2.legend(loc='upper right')
+
+            vix_excess_return_figs[f'{factor}_vix'] = fig
+            plt.close(fig)
+
+        # Plot 2: Excess Return vs. RF
+        factors = ['mom', 'roe', 'vol']
+        colors = ['red', 'blue', 'green']
+
+        rf_excess_returns_figs = {}
+
+        for factor, color in zip(factors, colors):
+            fig, ax1 = plt.subplots(figsize=(14, 6))
+            ax1.plot(df.index, df[factor], color=color, label=factor)
+            ax1.set_ylabel('Cumulative Excess Returns')
+            ax1.legend(loc='upper left')
+            ax1.set_title(f'{factor.upper()} Excess Returns und RF')
+
+            ax2 = ax1.twinx()
+            ax2.plot(df.index, df['RF'], color='orange', linestyle='--', label='RF')
+            ax2.set_ylabel('Risk Free Rate')
+            ax2.legend(loc='upper right')
+
+            rf_excess_returns_figs[f'{factor}_rf'] = fig
+            plt.close(fig)
+
+
+        # Plot 3: RF and VIX
+        fig, ax1 = plt.subplots(figsize=(14, 6))
+        ax1.plot(df.index, df['VIX'], color='purple', label='VIX')
+        ax1.set_ylabel('VIX', color='purple')
+        ax1.tick_params(axis='y', labelcolor='purple')
+        ax1.set_title('VIX und RF (Risk Free Rate) Time Series')
+
+        ax2 = ax1.twinx()
+        ax2.plot(df.index, df['RF'], color='orange', label='RF')
+        ax2.set_ylabel('Risk Free Rate', color='orange')
+        ax2.tick_params(axis='y', labelcolor='orange')
+
+        lines_1, labels_1 = ax1.get_legend_handles_labels()
+        lines_2, labels_2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper left')
+
+        rf_vix_fig = fig
+        plt.close(fig)
+
         self.factor_stats = factor_stats
         self.factor_returns_cum = factor_returns_cum
         self.factor_returns_cum_full = factor_returns_cum_full
-
+        self.vix_excess_return_figs = vix_excess_return_figs
+        self.rf_excess_returns_figs = rf_excess_returns_figs
+        self.rf_vix_fig = rf_vix_fig
 
 
 class TrainMLModel:
