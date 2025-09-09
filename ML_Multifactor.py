@@ -657,7 +657,7 @@ class TrainMLModel:
         if ml_type == 'RandomForestRegressor':
             model = RandomForestRegressor(n_estimators=100, random_state=42)
         elif ml_type == 'lightgbm':
-            model = lgb.LGBMRegressor(n_estimators=100, random_state=42)
+            model = lgb.LGBMRegressor(n_estimators=100, random_state=42, verbose=-1)
         elif ml_type == 'xgboost':
             model = xgb.XGBRegressor(n_estimators=100, random_state=42, eval_metric='rmse')
         elif ml_type == 'catboost':
@@ -1029,8 +1029,10 @@ if __name__ == '__main__':
         dict(name="Model 12",
              training_end_period='2014-12-31',
              test_start_period='2015-01-01',
-             ml_training_factors=['rf', 'vix'],
-             ml_model='xgboost')
+             ml_training_factors=['mom_roe_corr', 'past_mom_return', 'past_roe_return', 'past_index_return',
+                                  'past_index_vola', 'rf', 'vix'],
+             relevant_factors = ['mom', 'vol'],
+             ml_model='lightgbm'),
     ]
 
     # 3. Run models
