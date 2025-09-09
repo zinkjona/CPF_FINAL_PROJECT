@@ -627,7 +627,8 @@ class TrainMLModel:
                 )
                 # Mask to retain only selected features
                 x_features = x_features_full[x_features_full['label'].isin(self.ml_training_factors)]
-                features = x_features['value'].to_numpy()
+                # features = x_features['value'].to_numpy()
+                features_row = x_features.set_index('label').T
 
                 # 2b. Grid search for optimal blending weight
                 best_weight = 0.5
@@ -647,7 +648,7 @@ class TrainMLModel:
                         best_return = cum_return
                         best_weight = w
 
-                x.append(features)
+                x.append(features_row)
                 y.append(best_weight)
             except ValueError:
                 continue
@@ -659,15 +660,16 @@ class TrainMLModel:
         elif ml_type == 'lightgbm':
             model = lgb.LGBMRegressor(n_estimators=100, random_state=42)
         elif ml_type == 'xgboost':
-            model = xgb.XGBRegressor(n_estimators=100, random_state=42, use_label_encoder=False, eval_metric='rmse')
+            model = xgb.XGBRegressor(n_estimators=100, random_state=42, eval_metric='rmse')
         elif ml_type == 'catboost':
             model = CatBoostRegressor(iterations=100, random_seed=42, verbose=0)
         else:
             raise ValueError(f"Unknown ML-Model-Name: {ml_type}")
 
         # 4. Train model
-        model.fit(x, y)
-        y_train_pred = model.predict(x)
+        x_full = pd.concat(x, ignore_index=True)
+        model.fit(x_full, y)
+        y_train_pred = model.predict(x_full)
 
         # 5. Model goodness metrics
         r2 = r2_score(y, y_train_pred)
@@ -683,7 +685,7 @@ class TrainMLModel:
         df_importance = pd.DataFrame(importance, index=x_features['label'].to_list(), columns=["Importance"])
 
         # 7. Univariate feature scores (F-score, p-value)
-        f_scores, p_values = f_regression(x, np.array(y))
+        f_scores, p_values = f_regression(x_full, np.array(y))
         feature_stats = pd.DataFrame({
             'F-Score': pd.Series(f_scores, index=x_features['label'].to_list()),
             'p-Value': pd.Series(p_values, index=x_features['label'].to_list())
@@ -762,10 +764,11 @@ class ApplyMLModel:
                 # Compose feature vector for the current date
                 x_features_full = extract_features(mom, vol, roe, rf, vix, past_30d_returns, current_index_weights)
                 x_features = x_features_full[x_features_full['label'].isin(self.params['ml_training_factors'])]
-                features = x_features['value'].to_numpy().reshape(1, -1)
+                # features = x_features['value'].to_numpy().reshape(1, -1)
+                row = x_features.set_index('label').T
 
                 # Predict blend weight
-                pred = self.ml_model.predict(features)[0]
+                pred = self.ml_model.predict(row)[0]
                 # Clamp prediction between 0 and 1 for safety (rare: most regressors remain in bounds)
                 pred = max(0, min(1, pred))
                 weights.loc[date] = [pred, 1 - pred]
@@ -1025,16 +1028,12 @@ if __name__ == '__main__':
 
     # 2. Set model specifications
     model_definitions_ = [
-        dict(name="Model 1",
-             training_end_period='2012-12-31',
-             test_start_period='2013-01-01',
-             ml_training_factors=['mom_roe_corr', 'past_mom_return', 'past_roe_return', 'past_index_return',
-                                  'past_index_vola', 'rf', 'vix']),
-        dict(name="Model 2",
+        dict(name="Model 12",
              training_end_period='2014-12-31',
              test_start_period='2015-01-01',
-             ml_training_factors=['mom_roe_corr', 'past_mom_return', 'past_roe_return', 'past_index_return',
-                                  'past_index_vola', 'rf', 'vix'])]
+             ml_training_factors=['rf', 'vix'],
+             ml_model='xgboost')
+    ]
 
     # 3. Run models
     results_ = run_ml_backtests(model_definitions = model_definitions_, params = params_)
