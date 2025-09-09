@@ -25,11 +25,12 @@ def initialize_ml_model(params, update_params):
     # 2. Load all required data and generate descriptive statistics
     data_ = GetData(params=params)
     data_.get_data()                  # Load and process input data
-    data_.get_descriptive_stats()     # Calculate descriptive statistics about the data
+    data_.get_descriptive_return_stats()  # Calculate descriptive statistics about the data
 
     # 3. Calculate factor scores for each stock (e.g. momentum, volatility, ROE)
     stock_scores_ = GetStockScores(data=data_, params=params)
     stock_scores_.get_stock_scores()
+    stock_scores_.get_descriptive_factor_statistics()
 
     # 4. Initialize and train machine learning model to predict factor integration weights
     trained_ml_model_ = TrainMLModel(stock_scores=stock_scores_, data=data_, params=params)
@@ -86,25 +87,25 @@ def extract_features(mom, vol, roe, rf, vix, past_30d_return, current_index_weig
 
     # 4. Calculate factor portfolio returns using the factor_return function for each factor:
     #    - Momentum quintile returns (ascending: [1,2,3,4,5])
-    mom_return = factor_return(mom, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
+    past_mom_return = factor_return(mom, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
     #    - Volatility quintile returns (descending: [5,4,3,2,1])
-    vol_return = factor_return(vol, [5, 4, 3, 2, 1], current_index_weights, past_30d_return)
+    past_vol_return = factor_return(vol, [5, 4, 3, 2, 1], current_index_weights, past_30d_return)
     #    - ROE quintile returns (ascending)
-    roe_return = factor_return(roe, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
+    past_roe_return = factor_return(roe, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
 
     # 5. Collect additional features:
     features = {
         # Historical factor returns
         'past_mom_return': {
-            'value': mom_return,
+            'value': past_mom_return,
             'label': 'past_mom_return'
         },
         'past_vol_return': {
-            'value': vol_return,
+            'value': past_vol_return,
             'label': 'past_vol_return'
         },
         'past_roe_return': {
-            'value': roe_return,
+            'value': past_roe_return,
             'label': 'past_roe_return'
         },
         # Standard deviation (cross-sectional) of factor values
@@ -173,7 +174,7 @@ def run_ml_backtests(model_definitions, params):
         # Execute the full ML workflow for the current scenario
         ml_model = initialize_ml_model(params, updated_params)
 
-        # ---- Deltas berechnen ----
+        # ---- Calculate Deltas ----
         bt_perf = ml_model['backtest'].bt_performance
 
         ml_val = bt_perf.loc['ML', 'Average Return']
@@ -233,6 +234,36 @@ def run_ml_backtests(model_definitions, params):
 
     # Return the list of result dictionaries for all model definitions
     return results
+
+
+def return_stats(return_ts, periods_per_year=252):
+    """
+    Computes descriptive statistics for portfolio return series.
+
+    Returns a DataFrame with total return, annualized return, annualized volatility and max drawdown for each factor.
+    """
+    stats = {}
+    cum_returns = (1 + return_ts).cumprod()
+    total_return = cum_returns.iloc[-1] - 1
+
+    # Annualized return (CAGR)
+    num_years = len(return_ts) / periods_per_year
+    annual_return = (cum_returns.iloc[-1]) ** (1 / num_years) - 1
+
+    # Annualized volatility
+    annual_vol = return_ts.std() * np.sqrt(periods_per_year)
+
+    # Max Drawdown
+    roll_max = cum_returns.cummax()
+    drawdown = cum_returns / roll_max - 1.0
+    max_drawdown = drawdown.min()
+
+    stats['Total_Return'] = total_return
+    stats['Annualized_Return'] = annual_return
+    stats['Annualized_Volatility'] = annual_vol
+    stats['Max_Drawdown'] = max_drawdown
+
+    return pd.DataFrame(stats)
 
 
 class GetData:
@@ -357,7 +388,7 @@ class GetData:
         # Compute returns from prices, using percent change
         self.returns = data_dictionary['stock_prices'].pct_change(fill_method=None)
 
-    def get_descriptive_stats(self):
+    def get_descriptive_return_stats(self):
         """
         Calculates and stores a set of descriptive statistics for the loaded asset returns:
         - Time range, number of assets, missing data percentages, and summary return statistics (annualized).
@@ -439,6 +470,10 @@ class GetStockScores:
         self.vol_12m = None  # 12-month price volatility (stddev)
         self.roe_12m = None  # 12-month average ROE (or TTM value)
 
+        self.factor_stats = None
+        self.factor_returns_cum = None
+        self.factor_returns_cum_full = None
+
     def get_stock_scores(self):
         """
         Calculates or loads (if previously cached) factor-based stock scores:
@@ -517,6 +552,74 @@ class GetStockScores:
         self.perf_12m = stock_scores['perf_12m'].dropna(how='all')
         self.vol_12m = stock_scores['vol_12m'].dropna(how='all')
         self.roe_12m = stock_scores['roe_12m'].dropna(how='all')
+
+
+
+    def get_descriptive_factor_statistics(self):
+
+        # Collect all relevant ranking DataFrames and supporting input into a dictionary
+        rank_dfs = {
+            "mom": self.mom_ranks,
+            "vol": self.vol_ranks,
+            "roe": self.roe_ranks,
+            "index_weights": self.data.index_weights,
+            "returns": self.returns
+        }
+
+        # Find common index (dates) across all DataFrames
+        common_index = set.intersection(*[set(df.index) for df in rank_dfs.values()])
+        # Find common columns (e.g. stocks/tickers) across all DataFrames
+        common_columns = set.intersection(*[set(df.columns) for df in rank_dfs.values()])
+        common_index = sorted(common_index)
+        common_columns = sorted(common_columns)
+
+        # Restrict all DataFrames to common indices and columns
+        dfs_overlap = {k: v.loc[common_index, common_columns] for k, v in rank_dfs.items()}
+
+        # Create a mask which is True only where all DataFrames have valid (non-NaN) data
+        mask = np.ones(dfs_overlap["mom"].shape, dtype=bool)
+        for df in dfs_overlap.values():
+            mask &= df.notna().values
+
+        # Apply the mask so that only joint non-NaN data remains
+        dfs_clean = {k: df.where(mask) for k, df in dfs_overlap.items()}
+        for k in dfs_clean:
+            # Drop rows/columns which are all NaN after masking
+            dfs_clean[k] = dfs_clean[k].dropna(how='all').dropna(axis=1, how='all')
+
+        # Extract cleaned index weights and returns DataFrames
+        index_weights_clean = dfs_clean["index_weights"]
+        returns_clean = dfs_clean["returns"]
+
+        # Rescale the index weights so that each row (date) sums to 1
+        index_weights_clean_rescaled = index_weights_clean.div(index_weights_clean.sum(axis=1), axis=0)
+
+        # Calculate factor portfolio returns for all rank types (dynamically)
+        factor_returns = {}
+        # Only consider those keys in dfs_clean that are factor ranks
+        factor_keys = [k for k in dfs_clean.keys() if k not in ['index_weights', 'returns']]
+        for factor in factor_keys:
+            # Multiply scaled index weights with the rank, and normalize so weights sum to 1
+            factored = index_weights_clean_rescaled * dfs_clean[factor]
+            factored = factored.div(factored.sum(axis=1), axis=0)
+            # Compute daily portfolio return for each factor
+            factor_returns[factor] = (factored.shift(1) * returns_clean).sum(axis=1).iloc[1:]
+        # Package all factor return series into a DataFrame
+        index_return = (index_weights_clean_rescaled.shift(1) * returns_clean).sum(axis=1).iloc[1:]
+        factor_returns["index"] = index_return
+        factor_returns = pd.DataFrame(factor_returns)
+        factor_stats = return_stats(factor_returns)
+        factor_returns_cum = (1+factor_returns).cumprod() - 1
+
+
+        vix = self.vix[factor_returns.index.min():factor_returns.index.max()].reindex(factor_returns.index)
+        rf = self.rf[factor_returns.index.min():factor_returns.index.max()].reindex(factor_returns.index)
+        factor_returns_cum_full = pd.concat([factor_returns_cum, vix, rf], axis=1)
+
+        self.factor_stats = factor_stats
+        self.factor_returns_cum = factor_returns_cum
+        self.factor_returns_cum_full = factor_returns_cum_full
+
 
 
 class TrainMLModel:
