@@ -1,8 +1,4 @@
-# TODO: optimize model setting (GridSearchCV or RandomizedSearchCV) in xgboost
-# TODO: factor weights over time plotting
-
 import pickle
-
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
