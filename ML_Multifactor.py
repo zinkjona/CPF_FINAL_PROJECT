@@ -211,7 +211,7 @@ def run_ml_backtests(model_definitions, params):
         df_goodness_of_model_final = pd.DataFrame([gm_dict], index=[model_name])
 
         # --- Average Factor Weights over Time
-        avg_factor_weights = ml_model['applied_model'].factor_weight_predicted
+        avg_factor_weights = ml_model['applied_ml_model'].factor_weight_predicted
         df_avg_factor_weights = pd.DataFrame(avg_factor_weights.mean(), columns= [model_name]).T
         df_avg_factor_weights.columns = ml_model['params']['relevant_factors']
 
