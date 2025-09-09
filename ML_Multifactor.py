@@ -627,7 +627,6 @@ class TrainMLModel:
                 )
                 # Mask to retain only selected features
                 x_features = x_features_full[x_features_full['label'].isin(self.ml_training_factors)]
-                # features = x_features['value'].to_numpy()
                 features_row = x_features.set_index('label').T
 
                 # 2b. Grid search for optimal blending weight
@@ -764,7 +763,6 @@ class ApplyMLModel:
                 # Compose feature vector for the current date
                 x_features_full = extract_features(mom, vol, roe, rf, vix, past_30d_returns, current_index_weights)
                 x_features = x_features_full[x_features_full['label'].isin(self.params['ml_training_factors'])]
-                # features = x_features['value'].to_numpy().reshape(1, -1)
                 row = x_features.set_index('label').T
 
                 # Predict blend weight
