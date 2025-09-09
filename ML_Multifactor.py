@@ -1,6 +1,5 @@
 # TODO: optimize model setting (GridSearchCV or RandomizedSearchCV) in xgboost
 # TODO: factor weights over time plotting
-# TODO: comment Code!
 
 import pickle
 
@@ -41,13 +40,13 @@ def initialize_ml_model(params, update_params):
     trained_ml_model_.train_model()
 
     # 5. Apply trained ML model: compute factor weights and final stock weights
-    applied_model_ = ApplyMLModel(data=data_, params=params, stock_scores=stock_scores_,
+    applied_ml_model_ = ApplyMLModel(data=data_, params=params, stock_scores=stock_scores_,
                                   trained_model=trained_ml_model_)
-    applied_model_.get_factor_weight()   # Generate ML-based factor weights (monthly)
-    applied_model_.get_stock_weights()   # Calculate final stock weights
+    applied_ml_model_.get_factor_weight()   # Generate ML-based factor weights (monthly)
+    applied_ml_model_.get_stock_weights()   # Calculate final stock weights
 
     # 6. Run backtest: simulate portfolio performance using the computed weights
-    backtest_ = CalculateBacktest(data=data_, params=params, applied_model=applied_model_)
+    backtest_ = CalculateBacktest(data=data_, params=params, applied_ml_model=applied_ml_model_)
     backtest_.run_backtest()
 
     # 7. Gather all results in a summary dictionary and return
@@ -55,7 +54,7 @@ def initialize_ml_model(params, update_params):
                     'data': data_,
                     'stock_scores': stock_scores_,
                     'trained_ml_model': trained_ml_model_,
-                    'applied_model': applied_model_,
+                    'applied_ml_model': applied_ml_model_,
                     'backtest': backtest_}
 
     return summary_dict
@@ -179,10 +178,8 @@ def run_ml_backtests(model_definitions, params):
         ml_model = initialize_ml_model(params, updated_params)
 
         # ---- Deltas berechnen ----
-        # Annahme: bt_performance ist ein DataFrame und enthält Strategien als Index oder Spalte "index"
         bt_perf = ml_model['backtest'].bt_performance
 
-        # Diese Logik ist unabhängig von einem externen Loop!
         ml_val = bt_perf.loc['ML', 'Average Return']
         avg_ml_val = bt_perf.loc['AVG_ML', 'Average Return']
         fivefifty_val = bt_perf.loc['5050', 'Average Return']
@@ -195,14 +192,10 @@ def run_ml_backtests(model_definitions, params):
         }
         df_excess_return = pd.DataFrame([excess], index=[model_name])
 
-        # --------------------------------------------
-
         # --- Extract Feature Stats p-Values
         feature_stats = ml_model['trained_ml_model'].feature_stats
         pvalue_dict = feature_stats['p-Value'].to_dict()
         df_pvalue_final = pd.DataFrame([pvalue_dict], index=[model_name])
-
-        # ------------------------------------------------------
 
         # --- Extract Feature Importance
         imp_stats = ml_model['trained_ml_model'].df_importance
@@ -211,12 +204,16 @@ def run_ml_backtests(model_definitions, params):
 
         # --- Goodness of model
         good_of_model = ml_model['trained_ml_model'].goodness_of_model
-        good_of_model = good_of_model.loc[good_of_model['Metric'] == 'R² on training']
+        good_of_model = good_of_model.loc[good_of_model['Metric'] == 'R² on training'].copy()
         good_of_model.index = good_of_model['Metric']
-        good_of_model.drop(columns=['Metric'], inplace=True)
+        good_of_model = good_of_model.drop(columns=['Metric'])
         gm_dict = good_of_model["Value"].to_dict()
         df_goodness_of_model_final = pd.DataFrame([gm_dict], index=[model_name])
 
+        # --- Average Factor Weights over Time
+        avg_factor_weights = ml_model['applied_model'].factor_weight_predicted
+        df_avg_factor_weights = pd.DataFrame(avg_factor_weights.mean(), columns= [model_name]).T
+        df_avg_factor_weights.columns = ml_model['params']['relevant_factors']
 
         # Gather all outputs for this model/scenario in a dedicated results dictionary
         specific_ml_results = {
@@ -225,12 +222,13 @@ def run_ml_backtests(model_definitions, params):
             'GetData': ml_model['data'],
             'GetStockScores': ml_model['stock_scores'],
             'TrainedMLModel': ml_model['trained_ml_model'],
-            'AppliedModel': ml_model['applied_model'],
+            'AppliedModel': ml_model['applied_ml_model'],
             'BackTest': ml_model['backtest'],
             'ExcessReturns': df_excess_return,
             'FeatureStats': df_pvalue_final,
             'FeatureImportance': df_importance_final,
-            'GoodnessOfModel': df_goodness_of_model_final
+            'GoodnessOfModel': df_goodness_of_model_final,
+            'AverageFactorWeights': df_avg_factor_weights
         }
 
         # Save the results for further analysis
@@ -880,14 +878,14 @@ class ApplyMLModel:
 
 
 class CalculateBacktest:
-    def __init__(self, data: GetData, params: dict, applied_model: ApplyMLModel):
+    def __init__(self, data: GetData, params: dict, applied_ml_model: ApplyMLModel):
         """
         Initialize backtest calculation class.
 
         Args:
             data (GetData): Contains price/returns/time-series data.
             params (dict): Configuration dictionary with backtest period and settings.
-            applied_model (ApplyMLModel): Model instance with precomputed portfolio weights.
+            applied_ml_model (ApplyMLModel): Model instance with precomputed portfolio weights.
 
         Sets attributes:
             - returns: Returns DataFrame (date x stock)
@@ -908,10 +906,10 @@ class CalculateBacktest:
         self.test_end_period = params['test_end_period']
 
         # Store strategy weights for ML, 50/50, average, and index
-        self.stock_weights_ml = applied_model.stock_weights_ml
-        self.stock_weights_5050 = applied_model.stock_weights_5050
-        self.stock_weights_ml_av = applied_model.stock_weights_ml_av
-        self.stock_weights_index = applied_model.stock_weights_index
+        self.stock_weights_ml = applied_ml_model.stock_weights_ml
+        self.stock_weights_5050 = applied_ml_model.stock_weights_5050
+        self.stock_weights_ml_av = applied_ml_model.stock_weights_ml_av
+        self.stock_weights_index = applied_ml_model.stock_weights_index
 
         # Placeholders for output results (fill with later methods)
         self.df_portfolio_returns = None
