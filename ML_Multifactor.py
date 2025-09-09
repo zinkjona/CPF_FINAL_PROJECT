@@ -424,12 +424,14 @@ class GetData:
         stats["std"] *= np.sqrt(self.price_frequency_num)
 
         # Aggregate and save all statistics
-        self.descriptive_stats = {
+        descriptive_stats = {
             "basic_info": basic_info,
             "availability_stats": availability_stats,
             "return_stats": stats,
             "daily_availability": self.stock_prices.notna().sum(axis=1)
         }
+
+        self.descriptive_stats = descriptive_stats
 
 
 class GetStockScores:
@@ -617,7 +619,6 @@ class GetStockScores:
         factor_stats = return_stats(factor_returns)
         factor_returns_cum = (1+factor_returns).cumprod() - 1
 
-
         vix = self.vix[factor_returns.index.min():factor_returns.index.max()].reindex(factor_returns.index)
         rf = self.rf[factor_returns.index.min():factor_returns.index.max()].reindex(factor_returns.index)
         factor_returns_cum_full = pd.concat([factor_returns_cum, vix, rf], axis=1)
@@ -711,6 +712,43 @@ class GetStockScores:
         self.vix_excess_return_figs = vix_excess_return_figs
         self.rf_excess_returns_figs = rf_excess_returns_figs
         self.rf_vix_fig = rf_vix_fig
+
+        # Drop assets entirely missing
+        returns = returns_clean.copy(deep=True)
+
+        # Basic info: time window, data dimensions
+        basic_info = {
+            "start_date": returns.index.min(),
+            "end_date": returns.index.max(),
+            "num_days": returns.shape[0],
+            "num_assets": returns.shape[1],
+        }
+
+        # Asset-level missing data stats
+        missing = returns.isna().sum()
+        missing_percent = missing / len(returns) * 100
+        availability_stats = {
+            "min_missing_pct": missing_percent.min(),
+            "mean_missing_pct": missing_percent.mean(),
+            "max_missing_pct": missing_percent.max(),
+            "num_fully_available_assets": np.sum(missing == 0),
+        }
+
+        # Return statistics
+        stats = returns.describe().T[["mean", "std", "min", "max"]]
+        # Annualize mean and std deviation
+        stats["mean"] *= self.price_frequency_num
+        stats["std"] *= np.sqrt(self.price_frequency_num)
+
+        # Aggregate and save all statistics
+        return_stats = {
+            "basic_info": basic_info,
+            "availability_stats": availability_stats,
+            "return_stats": stats,
+            "daily_availability": self.stock_prices.notna().sum(axis=1)
+        }
+
+        self.return_stats = return_stats
 
 
 class TrainMLModel:
