@@ -26,12 +26,11 @@ def initialize_ml_model(params, update_params):
     # 2. Load all required data and generate descriptive statistics
     data_ = GetData(params=params)
     data_.get_data()                  # Load and process input data
-    data_.get_descriptive_return_stats()  # Calculate descriptive statistics about the data
 
     # 3. Calculate factor scores for each stock (e.g. momentum, volatility, ROE)
     stock_scores_ = GetStockScores(data=data_, params=params)
     stock_scores_.get_stock_scores()
-    stock_scores_.get_descriptive_factor_statistics()
+    stock_scores_.get_descriptive_statistics()
 
     # 4. Initialize and train machine learning model to predict factor integration weights
     trained_ml_model_ = TrainMLModel(stock_scores=stock_scores_, data=data_, params=params)
@@ -57,7 +56,7 @@ def initialize_ml_model(params, update_params):
 
     return summary_dict
 
-def factor_return(factor_values, label_order, current_index_weights, past_30d_return):
+def get_factor_return(factor_values, label_order, current_index_weights, past_30d_return):
     # This function calculates the total return for a factor-based portfolio.
     # It groups stocks into quintiles according to the factor, assigns weights, and computes the return over a period.
 
@@ -88,11 +87,11 @@ def extract_features(mom, vol, roe, rf, vix, past_30d_return, current_index_weig
 
     # 4. Calculate factor portfolio returns using the factor_return function for each factor:
     #    - Momentum quintile returns (ascending: [1,2,3,4,5])
-    past_mom_return = factor_return(mom, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
+    past_mom_return = get_factor_return(mom, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
     #    - Volatility quintile returns (descending: [5,4,3,2,1])
-    past_vol_return = factor_return(vol, [5, 4, 3, 2, 1], current_index_weights, past_30d_return)
+    past_vol_return = get_factor_return(vol, [5, 4, 3, 2, 1], current_index_weights, past_30d_return)
     #    - ROE quintile returns (ascending)
-    past_roe_return = factor_return(roe, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
+    past_roe_return = get_factor_return(roe, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
 
     # 5. Collect additional features:
     features = {
@@ -237,7 +236,7 @@ def run_ml_backtests(model_definitions, params):
     return results
 
 
-def return_stats(return_ts, periods_per_year=252):
+def get_return_stats(return_ts, periods_per_year=252):
     """
     Computes descriptive statistics for portfolio return series.
 
@@ -389,49 +388,6 @@ class GetData:
         # Compute returns from prices, using percent change
         self.returns = data_dictionary['stock_prices'].pct_change(fill_method=None)
 
-    def get_descriptive_return_stats(self):
-        """
-        Calculates and stores a set of descriptive statistics for the loaded asset returns:
-        - Time range, number of assets, missing data percentages, and summary return statistics (annualized).
-        - Stores results in self.descriptive_stats.
-        """
-
-        # Drop assets entirely missing
-        returns = self.returns.dropna(how='all', axis=1)
-
-        # Basic info: time window, data dimensions
-        basic_info = {
-            "start_date": returns.index.min(),
-            "end_date": returns.index.max(),
-            "num_days": returns.shape[0],
-            "num_assets": returns.shape[1],
-        }
-
-        # Asset-level missing data stats
-        missing = returns.isna().sum()
-        missing_percent = missing / len(returns) * 100
-        availability_stats = {
-            "min_missing_pct": missing_percent.min(),
-            "mean_missing_pct": missing_percent.mean(),
-            "max_missing_pct": missing_percent.max(),
-            "num_fully_available_assets": np.sum(missing == 0),
-        }
-
-        # Return statistics
-        stats = returns.describe().T[["mean", "std", "min", "max"]]
-        # Annualize mean and std deviation
-        stats["mean"] *= self.price_frequency_num
-        stats["std"] *= np.sqrt(self.price_frequency_num)
-
-        # Aggregate and save all statistics
-        descriptive_stats = {
-            "basic_info": basic_info,
-            "availability_stats": availability_stats,
-            "return_stats": stats,
-            "daily_availability": self.stock_prices.notna().sum(axis=1)
-        }
-
-        self.descriptive_stats = descriptive_stats
 
 
 class GetStockScores:
@@ -472,6 +428,9 @@ class GetStockScores:
         self.perf_12m = None  # 12-month price performance (raw values)
         self.vol_12m = None  # 12-month price volatility (stddev)
         self.roe_12m = None  # 12-month average ROE (or TTM value)
+
+        self.return_stats = None
+        self.numb_companies_fig = None
 
         self.factor_stats = None
         self.factor_returns_cum = None
@@ -563,7 +522,7 @@ class GetStockScores:
 
 
 
-    def get_descriptive_factor_statistics(self):
+    def get_descriptive_statistics(self):
 
         # Collect all relevant ranking DataFrames and supporting input into a dictionary
         rank_dfs = {
@@ -602,6 +561,49 @@ class GetStockScores:
         # Rescale the index weights so that each row (date) sums to 1
         index_weights_clean_rescaled = index_weights_clean.div(index_weights_clean.sum(axis=1), axis=0)
 
+        # --- 1. Get Return Statistics
+        returns = returns_clean.copy(deep=True)
+
+        # Basic info: time window, data dimensions
+        basic_info = {
+            "start_date": returns.index.min(),
+            "end_date": returns.index.max(),
+            "num_days": returns.shape[0],
+            "num_assets": returns.shape[1],
+        }
+        basic_info = pd.DataFrame([basic_info])
+        basic_info.index = ['values']
+
+        # Asset-level missing data stats
+        missing_percent = returns.isna().sum() / len(returns) * 100
+        availability_stats = {
+            "min_missing_pct": missing_percent.min(),
+            "mean_missing_pct": missing_percent.mean(),
+            "max_missing_pct": missing_percent.max(),
+            "num_fully_available_assets": np.sum(returns.isna().sum() == 0),
+        }
+        availability_stats = pd.DataFrame([availability_stats]).T
+        availability_stats.columns = ['values']
+
+        # Aggregate and save all statistics
+        return_stats = {
+            "basic_info": basic_info,
+            "availability_stats": availability_stats
+        }
+
+
+        # Number of companies over time
+        available = self.stock_prices.notna().sum(axis=1)
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(available.index, available.values)
+        ax.set_title("Number of companies per day")
+        ax.set_xlabel("Date")
+        ax.set_ylabel("Number of companies")
+        plt.tight_layout()
+        numb_companies_fig = fig
+        plt.close(fig)
+
+        # --- 2. Get Factor Statistics
         # Calculate factor portfolio returns for all rank types (dynamically)
         factor_returns = {}
         # Only consider those keys in dfs_clean that are factor ranks
@@ -616,7 +618,7 @@ class GetStockScores:
         index_return = (index_weights_clean_rescaled.shift(1) * returns_clean).sum(axis=1).iloc[1:]
         factor_returns["index"] = index_return
         factor_returns = pd.DataFrame(factor_returns)
-        factor_stats = return_stats(factor_returns)
+        factor_stats = get_return_stats(factor_returns)
         factor_returns_cum = (1+factor_returns).cumprod() - 1
 
         vix = self.vix[factor_returns.index.min():factor_returns.index.max()].reindex(factor_returns.index)
@@ -638,6 +640,7 @@ class GetStockScores:
         plt.grid(True)
         plt.tight_layout()
         cum_returns_fig = fig
+        plt.close(fig)
 
         # Calculate Excess Returns
         excess_returns = factor_returns[['mom', 'vol', 'roe']].subtract(factor_returns['index'], axis=0)
@@ -706,50 +709,14 @@ class GetStockScores:
         rf_vix_fig = fig
         plt.close(fig)
 
+        self.return_stats = return_stats
+        self.numb_companies_fig = numb_companies_fig
         self.factor_stats = factor_stats
         self.factor_returns_cum_full = factor_returns_cum_full
         self.cum_returns_fig = cum_returns_fig
         self.vix_excess_return_figs = vix_excess_return_figs
         self.rf_excess_returns_figs = rf_excess_returns_figs
         self.rf_vix_fig = rf_vix_fig
-
-        # Drop assets entirely missing
-        returns = returns_clean.copy(deep=True)
-
-        # Basic info: time window, data dimensions
-        basic_info = {
-            "start_date": returns.index.min(),
-            "end_date": returns.index.max(),
-            "num_days": returns.shape[0],
-            "num_assets": returns.shape[1],
-        }
-
-        # Asset-level missing data stats
-        missing = returns.isna().sum()
-        missing_percent = missing / len(returns) * 100
-        availability_stats = {
-            "min_missing_pct": missing_percent.min(),
-            "mean_missing_pct": missing_percent.mean(),
-            "max_missing_pct": missing_percent.max(),
-            "num_fully_available_assets": np.sum(missing == 0),
-        }
-
-        # Return statistics
-        stats = returns.describe().T[["mean", "std", "min", "max"]]
-        # Annualize mean and std deviation
-        stats["mean"] *= self.price_frequency_num
-        stats["std"] *= np.sqrt(self.price_frequency_num)
-
-        # Aggregate and save all statistics
-        return_stats = {
-            "basic_info": basic_info,
-            "availability_stats": availability_stats,
-            "return_stats": stats,
-            "daily_availability": self.stock_prices.notna().sum(axis=1)
-        }
-
-        self.return_stats = return_stats
-
 
 class TrainMLModel:
     def __init__(self, stock_scores: GetStockScores, data: GetData, params: dict):
