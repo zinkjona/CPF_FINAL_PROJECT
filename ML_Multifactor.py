@@ -477,9 +477,8 @@ class GetStockScores:
 
         self.vix_excess_return_figs = None
         self.rf_excess_returns_figs = None
-        self.vix_fig = None
-        self.rf_fig = None
         self.rf_vix_fig = None
+        self.cum_returns_fig = None
 
     def get_stock_scores(self):
         """
@@ -623,13 +622,28 @@ class GetStockScores:
         rf = self.rf[factor_returns.index.min():factor_returns.index.max()].reindex(factor_returns.index)
         factor_returns_cum_full = pd.concat([factor_returns_cum, vix, rf], axis=1)
 
-        # Visualization
-        excess_returns = factor_returns[['mom', 'vol', 'roe']].subtract(factor_returns['index'], axis=0)
-        excess_returns.columns = ['mom', 'vol', 'roe']
-        cum_excess_returns = (1 + excess_returns).cumprod()
-        df = pd.concat([cum_excess_returns,factor_returns_cum_full[['VIX', 'RF']]], axis=1)
+        # Plot: MOM vs. VOL vs. ROE vs. Index
+        fig = plt.figure(figsize=(12, 6))
 
-        # Plot 1: Excess Return vs. VIX
+        plt.plot(factor_returns_cum_full.index, factor_returns_cum_full['mom'], label='High Momentum')
+        plt.plot(factor_returns_cum_full.index, factor_returns_cum_full['vol'], label='Low Volatility')
+        plt.plot(factor_returns_cum_full.index, factor_returns_cum_full['roe'], label='High Profitability (ROE)')
+        plt.plot(factor_returns_cum_full.index, factor_returns_cum_full['index'], label='Index')
+
+        plt.title('Cumulative Returns: High Momentum, Low Volatiltiy, High Profitability and Index')
+        plt.xlabel('Date')
+        plt.ylabel('Cumulative Returns')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        cum_returns_fig = fig
+
+        # Calculate Excess Returns
+        excess_returns = factor_returns[['mom', 'vol', 'roe']].subtract(factor_returns['index'], axis=0)
+        cum_excess_returns = (1 + excess_returns).cumprod()
+        df = pd.concat([cum_excess_returns, factor_returns_cum_full[['VIX', 'RF']]], axis=1)
+
+        # Plot: Excess Return vs. VIX
         factors = ['mom', 'roe', 'vol']
         colors = ['red', 'blue', 'green']
 
@@ -650,7 +664,7 @@ class GetStockScores:
             vix_excess_return_figs[f'{factor}_vix'] = fig
             plt.close(fig)
 
-        # Plot 2: Excess Return vs. RF
+        # Plot: Excess Return vs. RF
         factors = ['mom', 'roe', 'vol']
         colors = ['red', 'blue', 'green']
 
@@ -672,7 +686,7 @@ class GetStockScores:
             plt.close(fig)
 
 
-        # Plot 3: RF and VIX
+        # Plot: RF and VIX
         fig, ax1 = plt.subplots(figsize=(14, 6))
         ax1.plot(df.index, df['VIX'], color='purple', label='VIX')
         ax1.set_ylabel('VIX', color='purple')
@@ -692,8 +706,8 @@ class GetStockScores:
         plt.close(fig)
 
         self.factor_stats = factor_stats
-        self.factor_returns_cum = factor_returns_cum
         self.factor_returns_cum_full = factor_returns_cum_full
+        self.cum_returns_fig = cum_returns_fig
         self.vix_excess_return_figs = vix_excess_return_figs
         self.rf_excess_returns_figs = rf_excess_returns_figs
         self.rf_vix_fig = rf_vix_fig
