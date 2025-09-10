@@ -1,4 +1,20 @@
-# TODO: test upload
+"""
+Applying ML models to dynamically weight equity factors (momentum, volatility, profitability).
+
+Pipeline
+--------
+1) Load & align data (prices, index weights, ROE, RF, VIX).
+2) Compute rolling factor scores and quintile ranks.
+3) Train an ML regressor to predict monthly two-factor blend weights.
+4) Apply predicted weights to build portfolios.
+5) Backtest and report performance metrics.
+
+Notes
+-----
+- Designed for daily data with monthly rebalancing by default.
+- Paths for cached inputs/outputs are configurable via `params`.
+"""
+
 import pickle
 import numpy as np
 import pandas as pd
@@ -17,147 +33,304 @@ DATA_PICKLE_FILE_PATH = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/i
 FACTOR_SCORES_PICKLE_FILE_PATH = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/outputs/factor_scores.pkl'
 
 def initialize_ml_model(params, update_params):
-    # This function coordinates the entire workflow for a machine learning (ML) based backtest,
-    # using the provided parameters and also applying any scenario-specific parameter updates.
-    # It returns a dictionary containing all objects/results from each step.
+    """
+    Run the complete machine learning (ML) backtest workflow for one scenario.
+
+    Workflow
+    --------
+    1. Merge scenario-specific overrides into `params`.
+    2. Load and preprocess input data (prices, weights, ROE, risk-free, VIX).
+    3. Compute factor scores (momentum, volatility, ROE) and descriptive statistics.
+    4. Train the ML model to predict optimal two-factor blend weights.
+    5. Apply the model to derive factor weights and final stock weights.
+    6. Run the portfolio backtest simulation.
+    7. Collect all outputs and intermediate artifacts in a summary dictionary.
+
+    Parameters
+    ----------
+    params : dict
+        Base configuration dictionary, including:
+          - frequencies (str, int)
+          - training/test periods (Timestamp)
+          - ml_training_factors (list of str)
+          - relevant_factors (list of str)
+          - ml_model (str, model name)
+    update_params : dict
+        Scenario-specific overrides, e.g. alternative training/test windows,
+        feature subsets, or ML model choice.
+
+    Returns
+    -------
+    dict
+        Dictionary with all scenario results:
+        {
+          'params' : dict,
+          'data' : GetData,
+          'stock_scores' : GetStockScores,
+          'trained_ml_model' : TrainMLModel,
+          'applied_ml_model' : ApplyMLModel,
+          'backtest' : CalculateBacktest
+        }
+
+    Notes
+    -----
+    - Mutates `params` in-place by updating with `update_params`.
+    - Provides a single entry point to reproduce an entire workflow run.
+    """
 
     # 1. Update parameters with scenario/model-specific settings
     params.update(update_params)
 
     # 2. Load all required data and generate descriptive statistics
     data_ = GetData(params=params)
-    data_.get_data()                  # Load and process input data
+    data_.get_data()  # Populate stock prices, index weights, ROE, RF, VIX, returns
 
-    # 3. Calculate factor scores for each stock (e.g. momentum, volatility, ROE)
+    # 3. Compute stock-level factor scores and descriptive stats
     stock_scores_ = GetStockScores(data=data_, params=params)
-    stock_scores_.get_stock_scores()
-    stock_scores_.get_descriptive_statistics()
+    stock_scores_.get_stock_scores()          # Factor ranks & raw metrics
+    stock_scores_.get_descriptive_statistics()  # Data coverage, factor returns, plots
 
-    # 4. Initialize and train machine learning model to predict factor integration weights
+    # 4. Train ML model to predict optimal factor integration weights
     trained_ml_model_ = TrainMLModel(stock_scores=stock_scores_, data=data_, params=params)
     trained_ml_model_.train_model()
 
-    # 5. Apply trained ML model: compute factor weights and final stock weights
-    applied_ml_model_ = ApplyMLModel(data=data_, params=params, stock_scores=stock_scores_,
-                                  trained_model=trained_ml_model_)
-    applied_ml_model_.get_factor_weight()   # Generate ML-based factor weights (monthly)
-    applied_ml_model_.get_stock_weights()   # Calculate final stock weights
+    # 5. Apply trained ML model to generate time-varying factor and stock weights
+    applied_ml_model_ = ApplyMLModel(
+        data=data_, params=params,
+        stock_scores=stock_scores_,
+        trained_model=trained_ml_model_
+    )
+    applied_ml_model_.get_factor_weight()   # Predict monthly blend weights
+    applied_ml_model_.get_stock_weights()   # Translate blend into stock-level weights
 
-    # 6. Run backtest: simulate portfolio performance using the computed weights
+    # 6. Run backtest to simulate portfolio performance
     backtest_ = CalculateBacktest(data=data_, params=params, applied_ml_model=applied_ml_model_)
     backtest_.run_backtest()
 
-    # 7. Gather all results in a summary dictionary and return
-    summary_dict = {'params': params,
-                    'data': data_,
-                    'stock_scores': stock_scores_,
-                    'trained_ml_model': trained_ml_model_,
-                    'applied_ml_model': applied_ml_model_,
-                    'backtest': backtest_}
+    # 7. Collect all components into a summary dictionary
+    summary_dict = {
+        'params': params,
+        'data': data_,
+        'stock_scores': stock_scores_,
+        'trained_ml_model': trained_ml_model_,
+        'applied_ml_model': applied_ml_model_,
+        'backtest': backtest_
+    }
 
     return summary_dict
 
 def get_factor_return(factor_values, label_order, current_index_weights, past_30d_return):
-    # This function calculates the total return for a factor-based portfolio.
-    # It groups stocks into quintiles according to the factor, assigns weights, and computes the return over a period.
+    """
+    Compute the compounded return of a quintile-sorted factor portfolio.
 
-    # 1. Assign each stock to a quintile based on its factor value.
-    #    The 'label_order' parameter defines the weight ranking (e.g., [1,2,3,4,5] or reverse).
+    Method
+    ------
+    1. Assign tickers to quintiles using `pd.qcut` on `factor_values`.
+    2. Weight each stock by (index_weight × quintile_label), then normalize to 1.
+    3. Multiply recent daily returns by these weights, summing across tickers.
+    4. Compound the resulting time series into a single window return.
+
+    Parameters
+    ----------
+    factor_values : pandas.Series
+        Factor values for one cross-section (index = tickers).
+    label_order : sequence of int
+        Quintile labels to apply (e.g., [1,2,3,4,5] for ascending or reversed for descending).
+    current_index_weights : pandas.Series
+        Index constituent weights for the same date (aligned to tickers).
+    past_30d_return : pandas.DataFrame
+        Past daily returns (rows = dates, columns = tickers).
+
+    Returns
+    -------
+    float
+        Compounded return over the window, as decimal (e.g., 0.03 = +3%).
+
+    Notes
+    -----
+    - Inputs must be aligned by ticker.
+    - Missing values effectively contribute zero.
+    """
+
+    # 1. Quintile assignment: map factor values into 5 bins
+    #    The labels define which quintile receives higher weight.
     weights = pd.qcut(factor_values, q=5, labels=label_order).astype(int) * current_index_weights
 
-    # 2. Normalize the weights so they sum to 1.
+    # 2. Normalize weights to ensure full portfolio allocation (sum = 1)
     weights = weights / weights.sum()
 
-    # 3. Calculate the weighted return time series:
-    #    For each date, multiply the assigned weight by the past 30-days returns for each stock, then sum across stocks.
+    # 3. Compute daily portfolio return as weighted sum of asset returns
     return_ts = (weights * past_30d_return).sum(axis=1)
 
-    # 4. Calculate the cumulative return over the time series and return the total percentage return.
+    # 4. Compound over the 30-day window to obtain total return
     return (1 + return_ts).cumprod().iloc[-1] - 1
 
 def extract_features(mom, vol, roe, rf, vix, past_30d_return, current_index_weights):
-    # This function computes a variety of aggregated features/statistics from past data
-    # for use as input (predictors) in the ML model.
+    """
+    Build aggregate features for a single cross-section (one training/inference sample).
 
-    # 1. Calculate the past index (benchmark) return time series using current index weights.
+    Overview
+    --------
+    The feature set summarizes (i) recent factor performance, (ii) cross-sectional structure,
+    (iii) macro risk proxies, and (iv) the market state of the benchmark constructed
+    from current index weights. These features are later fed into the ML regressor
+    to predict two-factor blend weights.
+
+    Included Signals
+    ----------------
+    - Past factor portfolio returns:
+      Quintile portfolios formed on momentum, volatility, and ROE.
+    - Cross-sectional dispersion:
+      Standard deviation of raw factor values (mom/vol/roe).
+    - Cross-factor structure:
+      Pairwise correlations (mom–vol, mom–roe) in the cross-section.
+    - Macro/risk proxies:
+      Risk-free rate (RF) and VIX (percent inputs converted to decimals).
+    - Market state:
+      Cumulative return of the index over the past window and its annualized volatility.
+
+    Parameters
+    ----------
+    mom, vol, roe : pandas.Series
+        Raw factor cross-sections for the current date (index = tickers).
+    rf, vix : pandas.Series or pandas.DataFrame or float
+        Risk-free rate and VIX for the current date. If series/dataframes are provided,
+        the first element (`.iloc[0]`) is used. Expected in percent; converted to decimals.
+    past_30d_return : pandas.DataFrame
+        Recent daily returns (rows = dates, columns = tickers) ending just before the current date.
+    current_index_weights : pandas.Series
+        Index constituent weights for the current date (index = tickers). Not necessarily normalized.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One-row feature frame where the index are internal feature keys and columns are:
+        - 'value': numeric feature value
+        - 'label': short feature name used downstream (e.g., 'past_mom_return', 'rf').
+
+    Notes
+    -----
+    - Tickers across inputs should be alignable; assets missing in a component implicitly drop out.
+    - The benchmark time series is computed as a weighted sum of asset returns using `current_index_weights`.
+    - Annualization uses 252 trading days when computing volatility.
+    - Factor portfolio formation uses quintiles with explicit label ordering per factor.
+    """
+
+    # 1) Benchmark (index) return time series over the window using current index weights
     past_index_return_ts = (past_30d_return * current_index_weights).sum(axis=1)
-    # 2. Calculate total cumulative return of the index over the period.
+    # 2) Cumulative window return of the benchmark
     past_index_return = (1 + past_index_return_ts).cumprod().iloc[-1] - 1
-    # 3. Calculate annualized volatility of the index during the period.
+    # 3) Annualized volatility of the benchmark over the window
     past_index_vola = past_index_return_ts.std() * np.sqrt(252)
 
-    # 4. Calculate factor portfolio returns using the factor_return function for each factor:
-    #    - Momentum quintile returns (ascending: [1,2,3,4,5])
+    # 4) Factor portfolio returns via quintile portfolios
+    #    Momentum: ascending labels (higher momentum → higher label)
     past_mom_return = get_factor_return(mom, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
-    #    - Volatility quintile returns (descending: [5,4,3,2,1])
+    #    Volatility: descending labels (lower vol → higher label)
     past_vol_return = get_factor_return(vol, [5, 4, 3, 2, 1], current_index_weights, past_30d_return)
-    #    - ROE quintile returns (ascending)
+    #    ROE: ascending labels (higher profitability → higher label)
     past_roe_return = get_factor_return(roe, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
 
-    # 5. Collect additional features:
+    # 5) Assemble features (values + human-readable labels)
     features = {
         # Historical factor returns
-        'past_mom_return': {
-            'value': past_mom_return,
-            'label': 'past_mom_return'
-        },
-        'past_vol_return': {
-            'value': past_vol_return,
-            'label': 'past_vol_return'
-        },
-        'past_roe_return': {
-            'value': past_roe_return,
-            'label': 'past_roe_return'
-        },
-        # Standard deviation (cross-sectional) of factor values
-        'momentum_std': {
-            'value': mom.std(),
-            'label': 'std_mom'
-        },
-        'volatility_std': {
-            'value': vol.std(),
-            'label': 'std_vol'
-        },
-        'roe_std': {
-            'value': roe.std(),
-            'label': 'std_roe'
-        },
-        # Cross-sectional correlations between factor scores
-        'mom_vol_corr': {
-            'value': mom.corr(vol),
-            'label': 'corr_mom_vol'
-        },
-        'mom_roe_corr': {
-            'value': mom.corr(roe),
-            'label': 'corr_mom_roe'
-        },
-        # Macro/market data (scaled appropriately)
-        'rf': {
-            'value': rf.iloc[0]/100,   # Risk-free rate (as decimal instead of percent)
-            'label': 'rf'
-        },
-        'vix': {
-            'value': vix.iloc[0]/100,  # VIX volatility index (as decimal instead of percent)
-            'label': 'vix'
-        },
-        # Index summary statistics
-        'past_index_return': {
-            'value': past_index_return,
-            'label': 'past_index_return'
-        },
-        'past_index_vola': {
-            'value': past_index_vola,
-            'label': 'past_index_vola'
-        }
+        'past_mom_return': {'value': past_mom_return, 'label': 'past_mom_return'},
+        'past_vol_return': {'value': past_vol_return, 'label': 'past_vol_return'},
+        'past_roe_return': {'value': past_roe_return, 'label': 'past_roe_return'},
+
+        # Cross-sectional dispersion of raw factor values
+        'momentum_std':    {'value': mom.std(), 'label': 'std_mom'},
+        'volatility_std':  {'value': vol.std(), 'label': 'std_vol'},
+        'roe_std':         {'value': roe.std(), 'label': 'std_roe'},
+
+        # Cross-factor correlations in the cross-section
+        'mom_vol_corr':    {'value': mom.corr(vol), 'label': 'corr_mom_vol'},
+        'mom_roe_corr':    {'value': mom.corr(roe), 'label': 'corr_mom_roe'},
+
+        # Macro / market proxies (convert percent → decimal)
+        'rf':              {'value': rf.iloc[0]/100,  'label': 'rf'},
+        'vix':             {'value': vix.iloc[0]/100, 'label': 'vix'},
+
+        # Benchmark state over the window
+        'past_index_return': {'value': past_index_return, 'label': 'past_index_return'},
+        'past_index_vola':   {'value': past_index_vola,   'label': 'past_index_vola'}
     }
 
-    # 6. Convert the features dictionary to a DataFrame (row-per-feature, columns: value/label)
+    # 6) Convert to one-row DataFrame (index=feature keys, columns=['value','label'])
     df = pd.DataFrame.from_dict(features, orient='index')
     return df
 
 def run_ml_backtests(model_definitions, params):
-    # This function runs multiple ML-based backtests across different scenario/model setups.
-    # It applies each configuration, stores detailed results, and prints progress messages.
+    """
+    Execute multiple ML scenarios and collect comparable outputs.
+
+    Overview
+    --------
+    Iterates over scenario definitions, merges each scenario's overrides into the
+    shared configuration, runs the full ML workflow, and aggregates a compact
+    set of artifacts for downstream comparison (excess returns, feature stats,
+    importances, etc.).
+
+    Parameters
+    ----------
+    model_definitions : list[dict]
+        One dict per scenario. Each dict must contain:
+        - 'name' : str
+            Human-readable scenario label.
+        - *optional* overrides whose keys may include:
+            'training_start_period', 'training_end_period',
+            'test_start_period', 'test_end_period',
+            'ml_training_factors', 'relevant_factors', 'ml_model', ...
+        Any key containing the substring 'period' is parsed to `pandas.Timestamp`.
+    params : dict
+        Base configuration reused across scenarios (frequencies, default periods,
+        features, factors, model type, etc.).
+
+    Returns
+    -------
+    list[dict]
+        One result dict per scenario with the following keys:
+        - 'Model'                : str
+        - 'Params'               : dict
+        - 'GetData'              : GetData
+        - 'GetStockScores'       : GetStockScores
+        - 'TrainedMLModel'       : TrainMLModel
+        - 'AppliedModel'         : ApplyMLModel
+        - 'BackTest'             : CalculateBacktest
+        - 'ExcessReturns'        : pandas.DataFrame    # row indexed by scenario name
+        - 'FeatureStats'         : pandas.DataFrame    # p-values per feature
+        - 'FeatureImportance'    : pandas.DataFrame    # model importances
+        - 'GoodnessOfModel'      : pandas.DataFrame    # e.g., R² on training
+        - 'AverageFactorWeights' : pandas.DataFrame    # mean factor weights over time
+
+    Side Effects
+    ------------
+    The call to `initialize_ml_model(params, updated_params)` **mutates `params`
+    in place** by updating it with the scenario overrides. If you reuse the same
+    `params` dict across scenarios (as done here), later scenarios inherit the
+    overrides from earlier ones. To avoid bleed-through, pass a shallow copy
+    (e.g., `params.copy()`) when invoking this function or construct `params`
+    anew for each run.
+
+    Notes
+    -----
+    - Scenario progress is printed to stdout.
+    - This function does not perform error handling; exceptions raised inside
+      the workflow are propagated to the caller.
+
+    Examples
+    --------
+    >>> scenarios = [
+    ...     dict(name="Baseline",
+    ...          training_end_period="2014-12-31",
+    ...          test_start_period="2015-01-01",
+    ...          ml_model="lightgbm"),
+    ...     dict(name="Alt Factors",
+    ...          relevant_factors=["mom", "vol"])
+    ... ]
+    >>> results = run_ml_backtests(scenarios, params)
+    >>> results[0]["ExcessReturns"]
+    """
 
     results = []
 
@@ -210,7 +383,7 @@ def run_ml_backtests(model_definitions, params):
 
         # --- Average Factor Weights over Time
         avg_factor_weights = ml_model['applied_ml_model'].factor_weight_predicted
-        df_avg_factor_weights = pd.DataFrame(avg_factor_weights.mean(), columns= [model_name]).T
+        df_avg_factor_weights = pd.DataFrame(avg_factor_weights.mean(), columns=[model_name]).T
         df_avg_factor_weights.columns = ml_model['params']['relevant_factors']
 
         # Gather all outputs for this model/scenario in a dedicated results dictionary
@@ -236,29 +409,64 @@ def run_ml_backtests(model_definitions, params):
     # Return the list of result dictionaries for all model definitions
     return results
 
-
 def get_return_stats(return_ts, periods_per_year=252):
     """
-    Computes descriptive statistics for portfolio return series.
+    Compute key performance statistics from a return series.
 
-    Returns a DataFrame with total return, annualized return, annualized volatility and max drawdown for each factor.
+    Overview
+    --------
+    Accepts a vector (Series) or panel (DataFrame) of periodic returns and
+    derives a compact set of risk/return metrics. If a DataFrame is passed,
+    calculations are performed column-wise.
+
+    Parameters
+    ----------
+    return_ts : pandas.Series or pandas.DataFrame
+        Periodic simple returns (e.g., daily). If a DataFrame is provided,
+        each column is treated as a separate strategy.
+    periods_per_year : int, default 252
+        Annualization constant (252 for daily, 52 for weekly, 12 for monthly).
+
+    Returns
+    -------
+    pandas.DataFrame
+        A DataFrame with the following columns (indexed by the input columns
+        or a single row for a Series):
+        - 'Total_Return'            : Cumulative simple return over the sample.
+        - 'Annualized_Return'       : CAGR computed from the cumulative path.
+        - 'Annualized_Volatility'   : Std. dev. of periodic returns × sqrt(periods_per_year).
+        - 'Max_Drawdown'            : Minimum peak-to-trough drawdown of the equity curve.
+
+    Notes
+    -----
+    - CAGR uses the standard formula: (ending_value)^(1/years) - 1, where
+      years = len(return_ts) / periods_per_year.
+    - Max drawdown is computed from the cumulative returns path via running peaks.
+    - All operations are vectorized; results align with columns if `return_ts`
+      is a DataFrame.
     """
+
     stats = {}
+
+    # Build cumulative equity curve(s): (1 + r_t) compounded over time
     cum_returns = (1 + return_ts).cumprod()
+
+    # Total simple return over the full sample (per column if DataFrame)
     total_return = cum_returns.iloc[-1] - 1
 
-    # Annualized return (CAGR)
+    # Annualized return (CAGR): scale the total growth over the sample length
     num_years = len(return_ts) / periods_per_year
     annual_return = (cum_returns.iloc[-1]) ** (1 / num_years) - 1
 
-    # Annualized volatility
+    # Annualized volatility: scale periodic std by sqrt(periods_per_year)
     annual_vol = return_ts.std() * np.sqrt(periods_per_year)
 
-    # Max Drawdown
+    # Max drawdown: compute from running peak of the equity curve
     roll_max = cum_returns.cummax()
     drawdown = cum_returns / roll_max - 1.0
     max_drawdown = drawdown.min()
 
+    # Assemble metrics into a tidy DataFrame
     stats['Total_Return'] = total_return
     stats['Annualized_Return'] = annual_return
     stats['Annualized_Volatility'] = annual_vol
@@ -268,44 +476,97 @@ def get_return_stats(return_ts, periods_per_year=252):
 
 
 class GetData:
-    def __init__(self, params: dict):
-        # Initialize the GetData object with relevant parameters from the configuration dictionary
+    """
+    Data loader/aligner for prices, index weights, ROE, RF, and VIX.
 
-        # Set the price frequency as a string, e.g., 'Monthly', 'Daily', etc.
+    Purpose
+    -------
+    Centralize I/O and basic preprocessing so downstream components receive
+    consistently indexed, frequency-aligned DataFrames.
+
+    Attributes
+    ----------
+    price_frequency_str : str
+        Pandas offset alias for resampling (e.g., 'D' for daily, 'M' for month-end).
+    use_pickle_data : bool
+        If True, read a cached pickle; otherwise parse Excel sources.
+    price_frequency_num : int
+        Periods-per-year constant used for annualization (e.g., 252 for daily).
+    stock_prices : pandas.DataFrame | None
+        Wide price panel [date × ticker]. Set by `get_data()`.
+    index_weights : pandas.DataFrame | None
+        Benchmark weights [date × ticker], forward-filled and row-normalized. Set by `get_data()`.
+    roe : pandas.DataFrame | None
+        ROE panel [date × ticker], aligned to price index, ffill/bfill. Set by `get_data()`.
+    rf : pandas.DataFrame | None
+        Risk-free rate time series with a single column 'RF'. Set by `get_data()`.
+    vix : pandas.DataFrame | None
+        VIX time series with a single column 'VIX'. Set by `get_data()`.
+    returns : pandas.DataFrame | None
+        Simple returns derived from `stock_prices`. Set by `get_data()`.
+    descriptive_stats : dict | None
+        Optional container for summary statistics (populated downstream).
+    """
+
+    def __init__(self, params: dict):
+        # Price frequency alias used for resampling (e.g., 'D', 'M', 'W-FRI').
         self.price_frequency_str = params['price_frequency_str']
 
-        # Specify whether to use pickled (pre-processed) data files
+        # Toggle between fast cached load (pickle) and full Excel ingest.
         self.use_pickle_data = params['use_pickle_data']
 
-        # Set the numeric frequency value (e.g., number of days for return calc)
+        # Periods-per-year constant (252 for daily, 12 for monthly, etc.).
         self.price_frequency_num = params['price_frequency_num']
 
-        # Initialize placeholders for data attributes to be populated later
+        # Placeholders populated by `get_data()`.
         self.stock_prices = None         # DataFrame: Historical stock prices
         self.index_weights = None        # DataFrame: Benchmark/index weights per period
         self.roe = None                  # DataFrame: Return on equity values for each stock
-        self.rf = None                   # Series: Risk-free rate (per period)
-        self.vix = None                  # Series: VIX volatility index (per period)
-        self.returns = None              # DataFrame: Calculated returns for all stocks
-        self.descriptive_stats = None    # DataFrame/Dict: Descriptive statistics for the dataset
+        self.rf = None                   # DataFrame: Risk-free rate (per period), column 'RF'
+        self.vix = None                  # DataFrame: VIX volatility index (per period), column 'VIX'
+        self.returns = None              # DataFrame: Calculated simple returns for all stocks
+        self.descriptive_stats = None    # Optional: summary statistics container
 
     def get_data(self):
         """
-        Loads and processes all required data for analysis and backtesting.
-        Data can be loaded either from a pickled file for efficiency or from raw Excel files for full refresh.
-        This method updates the class attributes in-place.
+        Load and harmonize all required datasets; compute returns.
+
+        Behavior
+        --------
+        - If `use_pickle_data` is True, read a cached pickle containing
+          {'stock_prices','index_weights','roe','rf_vix'}.
+        - Otherwise, read Excel sheets (mapping, prices, index weights, ROE, RF/VIX),
+          resample to `price_frequency_str` (last observation), align indices/columns
+          via the ticker mapping, forward-fill where appropriate, and row-normalize
+          index weights.
+
+        Side Effects
+        ------------
+        Sets the following attributes:
+            - self.stock_prices
+            - self.index_weights
+            - self.roe
+            - self.rf  (single column 'RF')
+            - self.vix (single column 'VIX')
+            - self.returns  (pct_change from `stock_prices`)
+
+        Notes
+        -----
+        - Index weights are reindexed to the price calendar, forward-filled, and normalized
+          so each row sums to 1.
+        - ROE is aligned to the price index and filled forward/backward for robustness.
+        - Returns are simple (not log) returns computed with `pct_change(fill_method=None)`.
         """
 
-        # Check if pickled data should be used (speeds up repeated runs)
+        # Fast path: load preprocessed binary bundle if available/desired.
         if self.use_pickle_data:
-            # Load pre-processed data from a (binary) pickle file
             with open(DATA_PICKLE_FILE_PATH, 'rb') as file:
                 data_dictionary = pickle.load(file)
 
         else:
-            # === START: Load and process data from Excel files ===
+            # === Ingest from Excel sources and perform alignment/cleanup ===
 
-            # 1. Load ticker mapping: maps security codes (e.g., MSCI codes) to Bloomberg or other ticker formats
+            # 1) Security code → ticker mapping (e.g., MSCI to Bloomberg tickers)
             ticker_mapping = pd.read_excel(r'data.xlsx', sheet_name='isin_msci_ticker_mapping')
             ticker_mapping.drop(columns=['Unnamed: 0'], inplace=True)
             ticker_mapping['MSCI_SECURITY_CODE'] = ticker_mapping['MSCI_SECURITY_CODE'].astype(str)
@@ -315,34 +576,31 @@ class GetData:
                 ticker_mapping['BBG_TICKER'])
             )
 
-            # 2. Load and process stock price data
+            # 2) Prices: set date index, resample if needed, then rename/keep mapped tickers
             stock_prices = pd.read_excel(r'data.xlsx', sheet_name='stock_prices')
             stock_prices.index = stock_prices['POS_DATE']
             stock_prices.drop(columns=['POS_DATE'], inplace=True)
 
-            # Resample price frequency if not daily. Takes the last data point per period.
+            # If not daily, downsample to the last observation of each period.
             if self.price_frequency_str == 'D':
-                pass  # Keep as is (already daily)
+                pass
             else:
                 stock_prices = stock_prices.resample(self.price_frequency_str).last()
 
-            # Rename columns to mapped Bloomberg tickers and keep only tickers present in mapping
             stock_prices = stock_prices.rename(columns=mapping_dict)
             stock_prices = stock_prices.loc[:, stock_prices.columns.isin(mapping_dict.values())]
 
-            # 3. Load and process index weights (benchmark weights per constituent)
+            # 3) Index weights: align to price calendar, ffill, row-normalize
             index_weights = pd.read_excel(r'data.xlsx', sheet_name='index_weights')
             index_weights.index = index_weights['AS_OF_DATE']
             index_weights.drop(columns=['AS_OF_DATE'], inplace=True)
             index_weights = index_weights.rename(columns=mapping_dict)
             index_weights = index_weights.loc[:, index_weights.columns.isin(mapping_dict.values())]
             bidx = stock_prices.index.unique()
-            # Forward-fill to ensure each price date has weights
             index_weights = index_weights.reindex(bidx).ffill()
-            # Normalize weights to sum to 1 for each date
-            index_weights = index_weights.div(index_weights.sum(axis=1), axis=0)
+            index_weights = index_weights.div(index_weights.sum(axis=1), axis=0)  # row-normalize
 
-            # 4. Load and process Return on Equity (ROE) values
+            # 4) ROE: pivot to wide format, align to prices, fill both directions
             roe_raw = pd.read_excel(r'data.xlsx', sheet_name='roe')
             roe = roe_raw.pivot(index='AS_OF_DATE', columns='MSCI_SECURITY_CODE', values='ROE')
             roe.index = pd.to_datetime(roe.index, dayfirst=True)
@@ -350,23 +608,19 @@ class GetData:
             roe.columns = roe.columns.astype(str)
             roe = roe.rename(columns=mapping_dict)
             roe = roe.loc[:, roe.columns.isin(mapping_dict.values())]
-            # Fill missing values both forward and backward for stability
             roe = roe.ffill().bfill()
-            # Restrict ROE data to the date range of stock prices and rename columns
             roe = roe[stock_prices.index.min():stock_prices.index.max()]
             roe.columns.name = None
-
-            # Ensure the ROE index matches stock price index, with forward-fill
             bidx = stock_prices.index.unique()
             roe = roe.reindex(bidx).ffill()
 
-            # 5. Load risk-free rate and VIX volatility index data
+            # 5) RF & VIX: keep as two-column frame with index as datetime
             rf_vix = pd.read_excel(r'data.xlsx', sheet_name='rf_vix')
             rf_vix.index = rf_vix['Date']
             rf_vix.drop(columns=['Date'], inplace=True)
             rf_vix.index = pd.to_datetime(rf_vix.index)
 
-            # Combine everything into a dictionary for pickling or direct use
+            # Bundle for optional caching and uniform downstream assignment
             data_dictionary = {
                 'stock_prices': stock_prices,
                 'index_weights': index_weights,
@@ -374,31 +628,85 @@ class GetData:
                 'rf_vix': rf_vix
             }
 
-            # Save to pickle for faster load in future runs (optional)
+            # Optional: cache to pickle for faster subsequent runs
             with open(DATA_PICKLE_FILE_PATH, 'wb') as file:
                 pickle.dump(data_dictionary, file)  # type: ignore
 
-        # === END data loading logic ===
-
-        # Assign loaded data to class attributes for downstream use
+        # === Assign canonical attributes for downstream components ===
         self.stock_prices = data_dictionary['stock_prices']
         self.index_weights = data_dictionary['index_weights']
         self.roe = data_dictionary['roe']
         self.rf = data_dictionary['rf_vix'][['RF']].copy(deep=True)
         self.vix = data_dictionary['rf_vix'][['VIX']].copy(deep=True)
-        # Compute returns from prices, using percent change
+
+        # Simple returns (no fill tricks): preserves NaNs where prices are missing
         self.returns = data_dictionary['stock_prices'].pct_change(fill_method=None)
 
 
-
 class GetStockScores:
+    """
+    Compute rolling factor metrics and quintile ranks; produce descriptive plots/stats.
+
+    Purpose
+    -------
+    Provide factor panels (12m momentum, annualized volatility, mean ROE), their
+    date-by-date quintile ranks, and a descriptive analysis bundle (tables + figures)
+    used by downstream ML and reporting steps.
+
+    Attributes
+    ----------
+    price_frequency_num : int
+        Window length used for rolling ops and annualization (e.g., 252 for daily).
+    params : dict
+        Full configuration dictionary passed from the pipeline.
+    data : GetData
+        Handle to preloaded market/factor data (prices, returns, weights, RF, VIX).
+    roe, stock_prices, rf, vix, returns : pandas.DataFrame
+        Direct references to the underlying inputs from `data`.
+    update_factor_scores : bool
+        If True, recompute factor panels/ranks; else load from pickle.
+    relevant_factors : list[str]
+        Factors expected downstream (e.g., ['mom','vol','roe']).
+
+    mom_ranks, vol_ranks, roe_ranks : pandas.DataFrame | None
+        Quintile ranks (date × ticker). Convention:
+        - MOM, ROE: descending ranks → labels [5,4,3,2,1] (5 = top quintile).
+        - VOL:      inverse mapping via labels [1,2,3,4,5] after descending rank
+                    (i.e., lower volatility ⇒ higher effective score).
+    perf_12m, vol_12m, roe_12m : pandas.DataFrame | None
+        Raw factor panels:
+        - perf_12m: price / price.shift(N) − 1
+        - vol_12m : rolling std(returns) × sqrt(periods/year)
+        - roe_12m : rolling mean ROE
+    return_stats : dict | None
+        Basic window and availability stats for returns panel.
+    factor_stats : pandas.DataFrame | None
+        Performance stats for factor portfolios and index (via `get_return_stats`).
+    factor_returns_cum : pandas.DataFrame | None
+        Cumulative factor returns (not stored directly; intermediate).
+    factor_returns_cum_full : pandas.DataFrame | None
+        Cumulative factor and index returns, plus RF/VIX (aligned).
+    numb_companies_fig, cum_returns_fig : matplotlib.figure.Figure | None
+        Figures for (i) universe breadth over time and (ii) cumulative perf plot.
+    vix_excess_return_figs, rf_excess_returns_figs : dict[str, Figure] | None
+        One figure per factor comparing cumulative excess vs. VIX / RF.
+    rf_vix_fig : matplotlib.figure.Figure | None
+        Dual-axis plot of RF and VIX over the sample.
+    """
+
     def __init__(self, data: GetData, params: dict):
         """
-        Initialize the GetStockScores class.
+        Initialize with references to input data and configuration.
 
-        Arguments:
-        - data: an instance of GetData, containing all loaded market/factor data.
-        - params: dictionary of config parameters.
+        Parameters
+        ----------
+        data : GetData
+            Preloaded data container (prices, returns, index weights, RF, VIX, ROE).
+        params : dict
+            Configuration with keys such as:
+              - 'price_frequency_num'
+              - 'update_factor_scores'
+              - 'relevant_factors'
         """
 
         # Frequency number (periods per year), e.g. 252 for daily, 12 for monthly, etc.
@@ -444,12 +752,24 @@ class GetStockScores:
 
     def get_stock_scores(self):
         """
-        Calculates or loads (if previously cached) factor-based stock scores:
-          - 12-month price momentum
-          - 12-month volatility
-          - 12-month mean ROE
-        and assigns stocks to quintile ranks for each factor per date.
-        Results are stored as attributes for downstream use.
+        Generate rolling factor metrics and assign quintile ranks per date.
+
+        Computes
+        --------
+        - 12-month momentum: price / price.shift(N) − 1.
+        - 12-month volatility: rolling std of returns × sqrt(periods/year).
+        - 12-month mean ROE: rolling average.
+        - Quintile ranks via `pd.qcut` (descending for MOM/ROE; inverted mapping for VOL).
+
+        Caching
+        -------
+        - If `update_factor_scores` is True, recompute and pickle results.
+        - Else, load ranks and raw panels from the cached pickle.
+
+        Sets
+        ----
+        self.mom_ranks, self.vol_ranks, self.roe_ranks,
+        self.perf_12m, self.vol_12m, self.roe_12m
         """
 
         stock_scores = {}
@@ -477,15 +797,15 @@ class GetStockScores:
                 try:
                     # Higher is better for momentum/ROE: rank descending, vol: rank descending (lower vol = higher quintile)
                     ranks_mom = row_mom.rank(method="first", ascending=False)
-                    quintiles_mom = pd.qcut(ranks_mom, q=5, labels=[5, 4, 3, 2, 1])
+                    quintiles_mom = pd.qcut(ranks_mom, q=5, labels=[5, 4, 3, 2, 1]).astype(int)
                     mom_ranks.loc[date] = quintiles_mom
 
                     ranks_vol = row_vol.rank(method="first", ascending=False)
-                    quintiles_vol = pd.qcut(ranks_vol, q=5, labels=[1, 2, 3, 4, 5])
+                    quintiles_vol = pd.qcut(ranks_vol, q=5, labels=[1, 2, 3, 4, 5]).astype(int)
                     vol_ranks.loc[date] = quintiles_vol
 
                     ranks_roe = row_roe.rank(method="first", ascending=False)
-                    quintiles_roe = pd.qcut(ranks_roe, q=5, labels=[5, 4, 3, 2, 1])
+                    quintiles_roe = pd.qcut(ranks_roe, q=5, labels=[5, 4, 3, 2, 1]).astype(int)
                     roe_ranks.loc[date] = quintiles_roe
 
                 except ValueError:
@@ -521,9 +841,31 @@ class GetStockScores:
         self.vol_12m = stock_scores['vol_12m'].dropna(how='all')
         self.roe_12m = stock_scores['roe_12m'].dropna(how='all')
 
-
-
     def get_descriptive_statistics(self):
+        """
+        Create overlap-cleaned panels, compute factor/index returns, and produce summary figures.
+
+        Steps
+        -----
+        1) Align ranks, index weights, and returns on common dates/tickers; mask NAs jointly.
+        2) Normalize index weights per date; compute:
+           - factor portfolio daily returns (rank-weighted),
+           - index daily returns,
+           - cumulative series and excess vs. index.
+        3) Build descriptive tables (basic window info, missingness).
+        4) Generate figures: cumulative factor vs. index, excess vs. VIX/RF, RF & VIX time series.
+
+        Outputs (set as attributes)
+        ---------------------------
+        return_stats : dict
+        numb_companies_fig : matplotlib.figure.Figure
+        factor_stats : pandas.DataFrame
+        factor_returns_cum_full : pandas.DataFrame
+        cum_returns_fig : matplotlib.figure.Figure
+        vix_excess_return_figs : dict[str, Figure]
+        rf_excess_returns_figs : dict[str, Figure]
+        rf_vix_fig : matplotlib.figure.Figure
+        """
 
         # Collect all relevant ranking DataFrames and supporting input into a dictionary
         rank_dfs = {
@@ -591,7 +933,6 @@ class GetStockScores:
             "basic_info": basic_info,
             "availability_stats": availability_stats
         }
-
 
         # Number of companies over time
         available = self.stock_prices.notna().sum(axis=1)
@@ -690,7 +1031,6 @@ class GetStockScores:
             rf_excess_returns_figs[f'{factor}_rf'] = fig
             plt.close(fig)
 
-
         # Plot: RF and VIX
         fig, ax1 = plt.subplots(figsize=(14, 6))
         ax1.plot(df.index, df['VIX'], color='purple', label='VIX')
@@ -710,6 +1050,7 @@ class GetStockScores:
         rf_vix_fig = fig
         plt.close(fig)
 
+        # Store outputs
         self.return_stats = return_stats
         self.numb_companies_fig = numb_companies_fig
         self.factor_stats = factor_stats
@@ -719,7 +1060,29 @@ class GetStockScores:
         self.rf_excess_returns_figs = rf_excess_returns_figs
         self.rf_vix_fig = rf_vix_fig
 
+
 class TrainMLModel:
+    """
+    Train a regression model to map macro/factor features to optimal blend weights.
+
+    Attributes
+    ----------
+    training_start_period, training_end_period : pandas.Timestamp
+        Inclusive training window (month ends).
+    ml_training_factors : list[str]
+        Feature labels to include from `extract_features`.
+    relevant_factors : list[str]
+        Two factors to be blended (order matters in grid search).
+    ml_model : object | None
+        Fitted regressor (RandomForest, LightGBM, XGBoost, or CatBoost).
+    goodness_of_model : pandas.DataFrame | None
+        Training metrics (R², MSE, MAE).
+    df_importance : pandas.DataFrame | None
+        Feature importances (if model supports it).
+    feature_stats : pandas.DataFrame | None
+        Univariate F-scores and p-values from `f_regression`.
+    """
+
     def __init__(self, stock_scores: GetStockScores, data: GetData, params: dict):
         """
         Class to handle machine learning model training on factor/market data.
@@ -756,16 +1119,24 @@ class TrainMLModel:
 
     def train_model(self):
         """
-        Trains an ML regressor (RandomForest, LightGBM, XGBoost, CatBoost) to map selected
-        factor features to the optimal combination weight for a two-factor strategy.
-        For each period, the optimal weight is determined via exhaustive grid search maximizing
-        next-period cumulative return.
+        Fit the ML regressor on monthly samples with grid-searched target weights.
 
-        Outputs:
-            - Trained model (.ml_model property)
-            - Model metrics (R², MSE, MAE)
-            - Feature importance DataFrame
-            - Univariate feature statistics (F-score, p-value)
+        Target Construction
+        -------------------
+        For each month `t`, compute the next-month compounded return for a two-factor
+        rank blend `w * f1 + (1-w) * f2` over a grid `w ∈ {0.0, 0.1, …, 1.0}`, and
+        select the `w` that maximizes the forward return. That `w` is the training target.
+
+        Features
+        --------
+        Built via `extract_features(...)` and filtered to `ml_training_factors`.
+
+        Outputs (set as attributes)
+        ---------------------------
+        - self.ml_model
+        - self.goodness_of_model  (R², MSE, MAE on training)
+        - self.df_importance      (feature importances)
+        - self.feature_stats      (F-score, p-value per feature)
         """
 
         x = []  # Feature vectors (per training sample)
@@ -894,15 +1265,50 @@ class TrainMLModel:
 
 
 class ApplyMLModel:
+    """
+    Apply a trained regressor to produce monthly factor blend weights and translate
+    them into stock-level portfolio weights for several strategies.
+
+    Attributes
+    ----------
+    params : dict
+        Configuration with keys like 'ml_training_factors' and 'relevant_factors'.
+    data : GetData
+        Source for index weights used as a base universe weighting.
+    mom_ranks, roe_ranks, vol_ranks : pandas.DataFrame
+        Date × ticker quintile ranks for each factor.
+    returns, perf_12m, vol_12m, roe_12m : pandas.DataFrame
+        Panels used to build features and for alignment.
+    rf, vix : pandas.DataFrame
+        Macro series (single-column frames with current value per date).
+    ml_model : object
+        Fitted regressor from `TrainMLModel`.
+
+    factor_weight_predicted, factor_weight_5050, factor_weight_av : pandas.DataFrame | None
+        Monthly factor blend weights (columns: ['WEIGHT_FACTOR_1','WEIGHT_FACTOR_2']).
+        - predicted: ML inference per month.
+        - 5050     : 0.5 / 0.5 baseline on all months with predictions.
+        - av       : time-constant average of predicted weights.
+    df_weight_summary : pandas.DataFrame | None
+        Summary of average weights and observation counts per scheme.
+    stock_weights_ml, stock_weights_5050, stock_weights_ml_av, stock_weights_index : pandas.DataFrame | None
+        Date × ticker portfolio weights constructed from the corresponding factor blends.
+    """
+
     def __init__(self, data: GetData, params: dict, stock_scores: GetStockScores, trained_model: TrainMLModel):
         """
-        Class to apply a trained ML blending model to current/recent factor and market data.
+        Initialize with data containers, factor ranks, and the trained model.
 
-        Args:
-            data: GetData instance (raw data and index weights)
-            params: Config dictionary for weighting and strategies
-            stock_scores: GetStockScores instance (with factor scores/ranks)
-            trained_model: TrainMLModel instance (with .ml_model attribute)
+        Parameters
+        ----------
+        data : GetData
+            Holds index weights and returns used to form stock portfolios.
+        params : dict
+            Includes 'relevant_factors' (two-factor blend order) and 'ml_training_factors'.
+        stock_scores : GetStockScores
+            Provides factor ranks (mom/roe/vol) and raw factor panels.
+        trained_model : TrainMLModel
+            Trained regressor whose `.ml_model` is used for inference.
         """
 
         self.params = params
@@ -937,8 +1343,26 @@ class ApplyMLModel:
 
     def get_factor_weight(self):
         """
-        Predicts optimal factor blend weights for each period using the trained ML model.
-        Stores ML, 50/50, and average weighting schemes and their summary statistics.
+        Infer monthly two-factor blend weights from the trained model.
+
+        Procedure
+        ---------
+        For each month-end date:
+        1. Build one-row feature vector via `extract_features(...)`.
+        2. Filter to `params['ml_training_factors']`.
+        3. Predict weight `w` for factor_1; clamp to [0, 1].
+        4. Store (w, 1-w) in a two-column frame.
+
+        Also constructs:
+        - `factor_weight_5050`: baseline 0.5/0.5 on same index.
+        - `factor_weight_av` : time-constant blend using the mean of predicted w.
+
+        Outputs (set as attributes)
+        ---------------------------
+        factor_weight_predicted : pandas.DataFrame
+        factor_weight_5050 : pandas.DataFrame
+        factor_weight_av : pandas.DataFrame
+        df_weight_summary : pandas.DataFrame
         """
 
         # Prepare DataFrame for factor weights (per date)
@@ -1000,18 +1424,17 @@ class ApplyMLModel:
 
     def get_stock_weights(self):
         """
-        Calculates stock portfolio weights using various factor blending strategies (ML-predicted blend,
-        50/50 blend, average ML blend, and index weights).
+        Translate factor blend weights into stock-level portfolio weights.
 
-        Results are stored as DataFrame attributes for each strategy:
-            - self.stock_weights_ml
-            - self.stock_weights_5050
-            - self.stock_weights_ml_av
-            - self.stock_weights_index
+        Strategies
+        ----------
+        - 'ML'     : use `factor_weight_predicted`.
+        - '5050'   : use `factor_weight_5050`.
+        - 'AVG_ML' : use `factor_weight_av`.
+        - 'INDEX'  : use raw index weights (masking to eligible universe).
 
-        Relies on:
-            - self.compute_stock_weights() (should handle weighting/logics as per blend method)
-            - factor ranks, factor blend weights present as DataFrames with matching indices
+        Returns are stored on the instance:
+        `stock_weights_ml`, `stock_weights_5050`, `stock_weights_ml_av`, `stock_weights_index`.
         """
 
         # Build dictionaries of ranks for each factor of interest
@@ -1026,26 +1449,38 @@ class ApplyMLModel:
             stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_predicted,
             scoring_method='factor_integration')
         self.stock_weights_5050 = self.compute_stock_weights(
-            stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_5050, scoring_method='factor_integration')
+            stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_5050,
+            scoring_method='factor_integration')
         self.stock_weights_ml_av = self.compute_stock_weights(
-            stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_av, scoring_method='factor_integration')
+            stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_av,
+            scoring_method='factor_integration')
         self.stock_weights_index = self.compute_stock_weights(
-            stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_av, scoring_method='index_weights')
+            stock_ranks_factor_1, stock_ranks_factor_2, self.factor_weight_av,
+            scoring_method='index_weights')
 
     def compute_stock_weights(self, stock_ranks_factor_1, stock_ranks_factor_2, factor_weights, scoring_method):
         """
-        Combines stock factor ranks and factor blending weights to produce a (dates, stocks) DataFrame
-        of portfolio weights.
+        Combine stock ranks with factor blend weights to form normalized portfolio weights.
 
-        Args:
-            stock_ranks_factor_1: DataFrame of first factor's stock ranks (index=date, columns=asset)
-            stock_ranks_factor_2: DataFrame of second factor's stock ranks
-            factor_weights: DataFrame with columns ['WEIGHT_FACTOR_1','WEIGHT_FACTOR_2'] (index=date)
-            scoring_method:
-                - 'factor_integration' : cross-sectionally blend ranks using factor_weights each date, rescale
-                - 'index_weights'      : just use index weights on eligible stocks (ignore factor blend)
-        Returns:
-            integrated_weight: DataFrame (date x stock), normalized rowsum=1 per date
+        Parameters
+        ----------
+        stock_ranks_factor_1, stock_ranks_factor_2 : pandas.DataFrame
+            Date × ticker rank panels for the two chosen factors.
+        factor_weights : pandas.DataFrame
+            Date × ['WEIGHT_FACTOR_1', 'WEIGHT_FACTOR_2'] with monthly blend weights.
+        scoring_method : {'factor_integration', 'index_weights'}
+            - 'factor_integration': multiply index weights by blended rank score.
+            - 'index_weights'     : use raw index weights on eligible tickers.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Date × ticker weights normalized to row-sum 1.
+
+        Notes
+        -----
+        - Rows with missing ranks are masked; weights are renormalized.
+        - Index is coerced to datetime for consistency across pipeline steps.
         """
 
         # Restrict index_weights to the dates in the factor ranks
@@ -1075,24 +1510,20 @@ class ApplyMLModel:
 
 
 class CalculateBacktest:
+    """
+    Backtest engine for ML and benchmark strategies with periodic rebalancing.
+
+    Attributes
+    ----------
+    test_start_period, test_end_period : pandas.Timestamp
+        Inclusive backtest window (evaluated at month ends).
+    df_portfolio_returns : pandas.DataFrame | None
+        Daily realized returns and cumulative paths per strategy.
+    bt_performance : pandas.DataFrame | None
+        Annualized metrics per strategy: Average Return, Volatility, Sharpe, Max Drawdown.
+    """
+
     def __init__(self, data: GetData, params: dict, applied_ml_model: ApplyMLModel):
-        """
-        Initialize backtest calculation class.
-
-        Args:
-            data (GetData): Contains price/returns/time-series data.
-            params (dict): Configuration dictionary with backtest period and settings.
-            applied_ml_model (ApplyMLModel): Model instance with precomputed portfolio weights.
-
-        Sets attributes:
-            - returns: Returns DataFrame (date x stock)
-            - price_frequency_num: Rebalancing frequency (e.g. 21: monthly)
-            - test_start_period, test_end_period: Backtest start/end dates
-            - stock_weights_ml, stock_weights_5050, stock_weights_ml_av, stock_weights_index:
-                  DataFrames of (date x stock) weights for each strategy
-            - df_portfolio_returns: To be filled by portfolio return computation
-            - bt_performance: To be filled by performance metrics calculation
-        """
 
         # Store asset returns for portfolio calculation
         self.returns = data.returns
@@ -1113,14 +1544,36 @@ class CalculateBacktest:
         self.bt_performance = None
 
     def run_backtest(self):
-        """
-        Run backtest: calculates portfolio returns for each strategy with monthly (or custom) rebalancing,
-        then computes performance metrics (average annual return, volatility, Sharpe, max drawdown).
+        def run_backtest(self):
+            """
+            Compute realized daily returns for each strategy and summarize performance.
 
-        Stores:
-          self.df_portfolio_returns: DataFrame (date x strategies) of realized and cumulative returns.
-          self.bt_performance: DataFrame (strategy x metrics) with perf stats.
-        """
+            Steps
+            -----
+            1. Identify month-end rebalance dates that fall within the test window.
+            2. For each period (from month-end t to month-end t+1), apply weights fixed at t
+               to the daily returns inside that out-of-sample window.
+            3. Construct a daily return series per strategy and its cumulative path.
+            4. Aggregate to annualized metrics per strategy:
+               - Average Return  = mean(return) × price_frequency_num
+               - Volatility      = std(return) × sqrt(price_frequency_num)
+               - Sharpe Ratio    = Average Return / Volatility (no RF subtraction here)
+               - Max Drawdown    = min over time of cumulative / rolling_max(cumulative) − 1
+
+            Notes
+            -----
+            - Requires strategy weight DataFrames with month-end indices.
+            - If, for a given rebalance date, no weights or all-zero weights are available,
+              that period is skipped for the affected strategy.
+            - Weights are renormalized defensively each period to ensure row-sum = 1.
+
+            Returns
+            -------
+            None
+                Results are written to:
+                - self.df_portfolio_returns : daily strategy returns and cumulative columns '*_CUM'
+                - self.bt_performance       : annualized summary metrics per strategy
+            """
 
         # Ensure returns date index is datetime
         returns = self.returns.copy(deep=True)
@@ -1207,30 +1660,57 @@ class CalculateBacktest:
 
 
 if __name__ == '__main__':
-    params_ = {'use_pickle_data': True,
-               'update_factor_scores': False,
-               'price_frequency_str': 'D',
-               'price_frequency_num': 252,
-               'training_start_period': pd.Timestamp('2007-01-31'),
-               'training_end_period': pd.Timestamp('2012-12-31'),
-               'test_start_period': pd.Timestamp('2013-01-01'),
-               'test_end_period': pd.Timestamp('2025-03-20'),
-               'ml_training_factors': ['mom_roe_corr', 'past_mom_return', 'past_roe_return',
-                                       'past_index_return', 'past_index_vola', 'rf', 'vix'],
-               'relevant_factors': ['mom', 'roe'],
-               'ml_model': 'RandomForestRegressor'}
 
-    # 2. Set model specifications
+    # -------------------------------------------------------------------------
+    # 1) Base configuration shared by all scenarios
+    #    - Controls data sources, frequency, training/test windows (defaults),
+    #      feature set for the ML model, factor pair to blend, and model family.
+    # -------------------------------------------------------------------------
+    params_ = {
+        'use_pickle_data': True,          # Use cached pickle instead of Excel parsing
+        'update_factor_scores': False,    # Recompute factor ranks or load from cache
+        'price_frequency_str': 'D',       # 'D' = daily data handling
+        'price_frequency_num': 252,       # Annualization factor for daily data
+        'training_start_period': pd.Timestamp('2007-01-31'),
+        'training_end_period': pd.Timestamp('2012-12-31'),
+        'test_start_period': pd.Timestamp('2013-01-01'),
+        'test_end_period': pd.Timestamp('2025-03-20'),
+        # Features pulled from `extract_features` (labels must match)
+        'ml_training_factors': [
+            'mom_roe_corr', 'past_mom_return', 'past_roe_return',
+            'past_index_return', 'past_index_vola', 'rf', 'vix'
+        ],
+        # Order matters: factor_1, factor_2 for the blending/search
+        'relevant_factors': ['mom', 'roe'],
+        # Baseline model family (can be overridden per scenario)
+        'ml_model': 'RandomForestRegressor'
+    }
+
+    # -------------------------------------------------------------------------
+    # 2) Scenario definitions
+    #    - Each dict can override any subset of `params_` (e.g., periods,
+    #      feature set, factor pair, model type). Keys containing 'period'
+    #      are parsed to pandas.Timestamp inside `run_ml_backtests`.
+    # -------------------------------------------------------------------------
     model_definitions_ = [
-        dict(name="Model 12",
-             training_end_period='2014-12-31',
-             test_start_period='2015-01-01',
-             ml_training_factors=['mom_roe_corr', 'past_mom_return', 'past_roe_return', 'past_index_return',
-                                  'past_index_vola', 'rf', 'vix'],
-             relevant_factors = ['mom', 'vol'],
-             ml_model='lightgbm'),
+        dict(
+            name="Model 12",
+            training_end_period='2014-12-31',     # Override base training end
+            test_start_period='2015-01-01',       # Override base test start
+            ml_training_factors=[
+                'mom_roe_corr', 'past_mom_return', 'past_roe_return',
+                'past_index_return', 'past_index_vola', 'rf', 'vix'
+            ],
+            relevant_factors=['mom', 'vol'],      # Try a different factor pair
+            ml_model='lightgbm'                   # Use LightGBM for this scenario
+        ),
     ]
 
-    # 3. Run models
-    results_ = run_ml_backtests(model_definitions = model_definitions_, params = params_)
-    pass
+    # -------------------------------------------------------------------------
+    # 3) Execute scenarios
+    #    - Returns a list of per-scenario result dictionaries including:
+    #      raw objects (data/scores/models), performance tables, feature stats,
+    #      importances, and average factor weights.
+    # -------------------------------------------------------------------------
+    results_ = run_ml_backtests(model_definitions=model_definitions_, params=params_)
+    pass  # keep explicit to emphasize script end / no unintended output
