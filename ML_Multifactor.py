@@ -470,8 +470,7 @@ class GetData:
 
     Attributes
     ----------
-    price_frequency_str : str
-        Pandas offset alias for resampling (e.g., 'D' for daily, 'M' for month-end).
+
     price_frequency_num : int
         Periods-per-year constant used for annualization (e.g., 252 for daily).
     stock_prices : pandas.DataFrame | None
@@ -486,14 +485,9 @@ class GetData:
         VIX time series with a single column 'VIX'. Set by `get_data()`.
     returns : pandas.DataFrame | None
         Simple returns derived from `stock_prices`. Set by `get_data()`.
-    descriptive_stats : dict | None
-        Optional container for summary statistics (populated downstream).
     """
 
     def __init__(self, params: dict):
-        # Price frequency alias used for resampling (e.g., 'D', 'M', 'W-FRI').
-        self.price_frequency_str = params['price_frequency_str']
-
         # Periods-per-year constant (252 for daily, 12 for monthly, etc.).
         self.price_frequency_num = params['price_frequency_num']
 
@@ -504,7 +498,6 @@ class GetData:
         self.rf = None                   # DataFrame: Risk-free rate (per period), column 'RF'
         self.vix = None                  # DataFrame: VIX volatility index (per period), column 'VIX'
         self.returns = None              # DataFrame: Calculated simple returns for all stocks
-        self.descriptive_stats = None    # Optional: summary statistics container
 
     def get_data(self):
         """
@@ -512,8 +505,7 @@ class GetData:
 
         Behavior
         --------
-        - Read Excel sheets (mapping, prices, index weights, ROE, RF/VIX),
-          resample to `price_frequency_str` (last observation), align indices/columns
+        - Read Excel sheets (mapping, prices, index weights, ROE, RF/VIX),align indices/columns
           via the ticker mapping, forward-fill where appropriate, and row-normalize
           index weights.
 
@@ -553,12 +545,6 @@ class GetData:
         stock_prices.index = stock_prices['POS_DATE']
         stock_prices.drop(columns=['POS_DATE'], inplace=True)
 
-        # If not daily, downsample to the last observation of each period.
-        if self.price_frequency_str == 'D':
-            pass
-        else:
-            stock_prices = stock_prices.resample(self.price_frequency_str).last()
-
         stock_prices = stock_prices.rename(columns=mapping_dict)
         stock_prices = stock_prices.loc[:, stock_prices.columns.isin(mapping_dict.values())]
 
@@ -575,7 +561,7 @@ class GetData:
         # 4) ROE: pivot to wide format, align to prices, fill both directions
         roe_raw = pd.read_excel(r'data.xlsx', sheet_name='roe')
         roe = roe_raw.pivot(index='AS_OF_DATE', columns='MSCI_SECURITY_CODE', values='ROE')
-        roe.index = pd.to_datetime(roe.index, dayfirst=True)
+        roe.index = pd.to_datetime(roe.index, format='%d.%m.%y')
         roe.sort_index(inplace=True)
         roe.columns = roe.columns.astype(str)
         roe = roe.rename(columns=mapping_dict)
@@ -757,15 +743,15 @@ class GetStockScores:
             try:
                 # Higher is better for momentum/ROE: rank descending, vol: rank descending (lower vol = higher quintile)
                 ranks_mom = row_mom.rank(method="first", ascending=False)
-                quintiles_mom = pd.qcut(ranks_mom, q=5, labels=[5, 4, 3, 2, 1]).astype(int)
+                quintiles_mom = pd.qcut(ranks_mom, q=5, labels=[5, 4, 3, 2, 1])
                 mom_ranks.loc[date] = quintiles_mom
 
                 ranks_vol = row_vol.rank(method="first", ascending=False)
-                quintiles_vol = pd.qcut(ranks_vol, q=5, labels=[1, 2, 3, 4, 5]).astype(int)
+                quintiles_vol = pd.qcut(ranks_vol, q=5, labels=[1, 2, 3, 4, 5])
                 vol_ranks.loc[date] = quintiles_vol
 
                 ranks_roe = row_roe.rank(method="first", ascending=False)
-                quintiles_roe = pd.qcut(ranks_roe, q=5, labels=[5, 4, 3, 2, 1]).astype(int)
+                quintiles_roe = pd.qcut(ranks_roe, q=5, labels=[5, 4, 3, 2, 1])
                 roe_ranks.loc[date] = quintiles_roe
 
             except ValueError:
@@ -1620,7 +1606,6 @@ if __name__ == '__main__':
     # -------------------------------------------------------------------------
     params_ = {
         'update_factor_scores': False,    # Recompute factor ranks or load from cache
-        'price_frequency_str': 'D',       # 'D' = daily data handling
         'price_frequency_num': 252,       # Annualization factor for daily data
         'training_start_period': pd.Timestamp('2007-01-31'),
         'training_end_period': pd.Timestamp('2012-12-31'),
