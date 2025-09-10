@@ -770,7 +770,6 @@ class GetStockScores:
             'roe_12m': roe_12m
         }
 
-
         # ===== 5. Attach as object attributes for future access =====
         self.mom_ranks = stock_scores['mom_ranks'].dropna(how='all')
         self.vol_ranks = stock_scores['vol_ranks'].dropna(how='all')
@@ -994,6 +993,7 @@ class GetStockScores:
         self.numb_companies_fig = numb_companies_fig
         self.factor_stats = factor_stats
         self.factor_returns_cum_full = factor_returns_cum_full
+
         self.cum_returns_fig = cum_returns_fig
         self.vix_excess_return_figs = vix_excess_return_figs
         self.rf_excess_returns_figs = rf_excess_returns_figs
