@@ -17,7 +17,6 @@ Notes
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from sklearn.ensemble import RandomForestRegressor
@@ -27,437 +26,6 @@ from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostRegressor
-
-def initialize_ml_model(params, update_params):
-    """
-    Run the complete machine learning (ML) backtest workflow for one scenario.
-
-    Workflow
-    --------
-    1. Merge scenario-specific overrides into `params`.
-    2. Load and preprocess input data (prices, weights, ROE, risk-free, VIX).
-    3. Compute factor scores (momentum, volatility, ROE) and descriptive statistics.
-    4. Train the ML model to predict optimal two-factor blend weights.
-    5. Apply the model to derive factor weights and final stock weights.
-    6. Run the portfolio backtest simulation.
-    7. Collect all outputs and intermediate artifacts in a summary dictionary.
-
-    Parameters
-    ----------
-    params : dict
-        Base configuration dictionary, including:
-          - frequencies (str, int)
-          - training/test periods (Timestamp)
-          - ml_training_factors (list of str)
-          - relevant_factors (list of str)
-          - ml_model (str, model name)
-    update_params : dict
-        Scenario-specific overrides, e.g. alternative training/test windows,
-        feature subsets, or ML model choice.
-
-    Returns
-    -------
-    dict
-        Dictionary with all scenario results:
-        {
-          'params' : dict,
-          'data' : GetData,
-          'stock_scores' : GetStockScores,
-          'trained_ml_model' : TrainMLModel,
-          'applied_ml_model' : ApplyMLModel,
-          'backtest' : CalculateBacktest
-        }
-
-    Notes
-    -----
-    - Mutates `params` in-place by updating with `update_params`.
-    - Provides a single entry point to reproduce an entire workflow run.
-    """
-
-    # 1. Update parameters with scenario/model-specific settings
-    params.update(update_params)
-
-    # 2. Load all required data and generate descriptive statistics
-    data_ = GetData(params=params)
-    data_.get_data()  # Populate stock prices, index weights, ROE, RF, VIX, returns
-
-    # 3. Compute stock-level factor scores and descriptive stats
-    stock_scores_ = GetStockScores(data=data_, params=params)
-    stock_scores_.get_stock_scores()          # Factor ranks & raw metrics
-    stock_scores_.get_descriptive_statistics()  # Data coverage, factor returns, plots
-
-    # 4. Train ML model to predict optimal factor integration weights
-    trained_ml_model_ = TrainMLModel(stock_scores=stock_scores_, data=data_, params=params)
-    trained_ml_model_.train_model()
-
-    # 5. Apply trained ML model to generate time-varying factor and stock weights
-    applied_ml_model_ = ApplyMLModel(
-        data=data_, params=params,
-        stock_scores=stock_scores_,
-        trained_model=trained_ml_model_
-    )
-    applied_ml_model_.get_factor_weight()   # Predict monthly blend weights
-    applied_ml_model_.get_stock_weights()   # Translate blend into stock-level weights
-
-    # 6. Run backtest to simulate portfolio performance
-    backtest_ = CalculateBacktest(data=data_, params=params, applied_ml_model=applied_ml_model_)
-    backtest_.run_backtest()
-
-    # 7. Collect all components into a summary dictionary
-    summary_dict = {
-        'params': params,
-        'data': data_,
-        'stock_scores': stock_scores_,
-        'trained_ml_model': trained_ml_model_,
-        'applied_ml_model': applied_ml_model_,
-        'backtest': backtest_
-    }
-
-    return summary_dict
-
-def get_factor_return(factor_values, label_order, current_index_weights, past_30d_return):
-    """
-    Compute the compounded return of a quintile-sorted factor portfolio.
-
-    Method
-    ------
-    1. Assign tickers to quintiles using `pd.qcut` on `factor_values`.
-    2. Weight each stock by (index_weight × quintile_label), then normalize to 1.
-    3. Multiply recent daily returns by these weights, summing across tickers.
-    4. Compound the resulting time series into a single window return.
-
-    Parameters
-    ----------
-    factor_values : pandas.Series
-        Factor values for one cross-section (index = tickers).
-    label_order : sequence of int
-        Quintile labels to apply (e.g., [1,2,3,4,5] for ascending or reversed for descending).
-    current_index_weights : pandas.Series
-        Index constituent weights for the same date (aligned to tickers).
-    past_30d_return : pandas.DataFrame
-        Past daily returns (rows = dates, columns = tickers).
-
-    Returns
-    -------
-    float
-        Compounded return over the window, as decimal (e.g., 0.03 = +3%).
-
-    Notes
-    -----
-    - Inputs must be aligned by ticker.
-    - Missing values effectively contribute zero.
-    """
-
-    # 1. Quintile assignment: map factor values into 5 bins
-    #    The labels define which quintile receives higher weight.
-    weights = pd.qcut(factor_values, q=5, labels=label_order).astype(int) * current_index_weights
-
-    # 2. Normalize weights to ensure full portfolio allocation (sum = 1)
-    weights = weights / weights.sum()
-
-    # 3. Compute daily portfolio return as weighted sum of asset returns
-    return_ts = (weights * past_30d_return).sum(axis=1)
-
-    # 4. Compound over the 30-day window to obtain total return
-    return (1 + return_ts).cumprod().iloc[-1] - 1
-
-def extract_features(mom, vol, roe, rf, vix, past_30d_return, current_index_weights):
-    """
-    Build aggregate features for a single cross-section (one training/inference sample).
-
-    Overview
-    --------
-    The feature set summarizes (i) recent factor performance, (ii) cross-sectional structure,
-    (iii) macro risk proxies, and (iv) the market state of the benchmark constructed
-    from current index weights. These features are later fed into the ML regressor
-    to predict two-factor blend weights.
-
-    Included Signals
-    ----------------
-    - Past factor portfolio returns:
-      Quintile portfolios formed on momentum, volatility, and ROE.
-    - Cross-sectional dispersion:
-      Standard deviation of raw factor values (mom/vol/roe).
-    - Cross-factor structure:
-      Pairwise correlations (mom–vol, mom–roe) in the cross-section.
-    - Macro/risk proxies:
-      Risk-free rate (RF) and VIX (percent inputs converted to decimals).
-    - Market state:
-      Cumulative return of the index over the past window and its annualized volatility.
-
-    Parameters
-    ----------
-    mom, vol, roe : pandas.Series
-        Raw factor cross-sections for the current date (index = tickers).
-    rf, vix : pandas.Series or pandas.DataFrame or float
-        Risk-free rate and VIX for the current date. If series/dataframes are provided,
-        the first element (`.iloc[0]`) is used. Expected in percent; converted to decimals.
-    past_30d_return : pandas.DataFrame
-        Recent daily returns (rows = dates, columns = tickers) ending just before the current date.
-    current_index_weights : pandas.Series
-        Index constituent weights for the current date (index = tickers). Not necessarily normalized.
-
-    Returns
-    -------
-    pandas.DataFrame
-        One-row feature frame where the index are internal feature keys and columns are:
-        - 'value': numeric feature value
-        - 'label': short feature name used downstream (e.g., 'past_mom_return', 'rf').
-
-    Notes
-    -----
-    - Tickers across inputs should be alignable; assets missing in a component implicitly drop out.
-    - The benchmark time series is computed as a weighted sum of asset returns using `current_index_weights`.
-    - Annualization uses 252 trading days when computing volatility.
-    - Factor portfolio formation uses quintiles with explicit label ordering per factor.
-    """
-
-    # 1) Benchmark (index) return time series over the window using current index weights
-    past_index_return_ts = (past_30d_return * current_index_weights).sum(axis=1)
-    # 2) Cumulative window return of the benchmark
-    past_index_return = (1 + past_index_return_ts).cumprod().iloc[-1] - 1
-    # 3) Annualized volatility of the benchmark over the window
-    past_index_vola = past_index_return_ts.std() * np.sqrt(252)
-
-    # 4) Factor portfolio returns via quintile portfolios
-    #    Momentum: ascending labels (higher momentum → higher label)
-    past_mom_return = get_factor_return(mom, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
-    #    Volatility: descending labels (lower vol → higher label)
-    past_vol_return = get_factor_return(vol, [5, 4, 3, 2, 1], current_index_weights, past_30d_return)
-    #    ROE: ascending labels (higher profitability → higher label)
-    past_roe_return = get_factor_return(roe, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
-
-    # 5) Assemble features (values + human-readable labels)
-    features = {
-        # Historical factor returns
-        'past_mom_return': {'value': past_mom_return, 'label': 'past_mom_return'},
-        'past_vol_return': {'value': past_vol_return, 'label': 'past_vol_return'},
-        'past_roe_return': {'value': past_roe_return, 'label': 'past_roe_return'},
-
-        # Cross-sectional dispersion of raw factor values
-        'momentum_std':    {'value': mom.std(), 'label': 'std_mom'},
-        'volatility_std':  {'value': vol.std(), 'label': 'std_vol'},
-        'roe_std':         {'value': roe.std(), 'label': 'std_roe'},
-
-        # Cross-factor correlations in the cross-section
-        'mom_vol_corr':    {'value': mom.corr(vol), 'label': 'corr_mom_vol'},
-        'mom_roe_corr':    {'value': mom.corr(roe), 'label': 'corr_mom_roe'},
-
-        # Macro / market proxies (convert percent → decimal)
-        'rf':              {'value': rf.iloc[0]/100,  'label': 'rf'},
-        'vix':             {'value': vix.iloc[0]/100, 'label': 'vix'},
-
-        # Benchmark state over the window
-        'past_index_return': {'value': past_index_return, 'label': 'past_index_return'},
-        'past_index_vola':   {'value': past_index_vola,   'label': 'past_index_vola'}
-    }
-
-    # 6) Convert to one-row DataFrame (index=feature keys, columns=['value','label'])
-    df = pd.DataFrame.from_dict(features, orient='index')
-    return df
-
-def run_ml_backtests(model_definitions, params):
-    """
-    Execute multiple ML scenarios and collect comparable outputs.
-
-    Overview
-    --------
-    Iterates over scenario definitions, merges each scenario's overrides into the
-    shared configuration, runs the full ML workflow, and aggregates a compact
-    set of artifacts for downstream comparison (excess returns, feature stats,
-    importances, etc.).
-
-    Parameters
-    ----------
-    model_definitions : list[dict]
-        One dict per scenario. Each dict must contain:
-        - 'name' : str
-            Human-readable scenario label.
-        - *optional* overrides whose keys may include:
-            'training_start_period', 'training_end_period',
-            'test_start_period', 'test_end_period',
-            'ml_training_factors', 'relevant_factors', 'ml_model', ...
-        Any key containing the substring 'period' is parsed to `pandas.Timestamp`.
-    params : dict
-        Base configuration reused across scenarios (frequencies, default periods,
-        features, factors, model type, etc.).
-
-    Returns
-    -------
-    list[dict]
-        One result dict per scenario with the following keys:
-        - 'Model'                : str
-        - 'Params'               : dict
-        - 'GetData'              : GetData
-        - 'GetStockScores'       : GetStockScores
-        - 'TrainedMLModel'       : TrainMLModel
-        - 'AppliedModel'         : ApplyMLModel
-        - 'BackTest'             : CalculateBacktest
-        - 'ExcessReturns'        : pandas.DataFrame    # row indexed by scenario name
-        - 'FeatureStats'         : pandas.DataFrame    # p-values per feature
-        - 'FeatureImportance'    : pandas.DataFrame    # model importances
-        - 'GoodnessOfModel'      : pandas.DataFrame    # e.g., R² on training
-        - 'AverageFactorWeights' : pandas.DataFrame    # mean factor weights over time
-
-    Side Effects
-    ------------
-    The call to `initialize_ml_model(params, updated_params)` **mutates `params`
-    in place** by updating it with the scenario overrides. If you reuse the same
-    `params` dict across scenarios (as done here), later scenarios inherit the
-    overrides from earlier ones. To avoid bleed-through, pass a shallow copy
-    (e.g., `params.copy()`) when invoking this function or construct `params`
-    anew for each run.
-
-    Notes
-    -----
-    - Scenario progress is printed to stdout.
-    - This function does not perform error handling; exceptions raised inside
-      the workflow are propagated to the caller.
-
-    """
-
-    results = []
-
-    # Loop over all model definitions (scenarios) one by one
-    for i, model_def in enumerate(model_definitions, start=1):
-        model_name = model_def['name']
-
-        # Parse scenario parameters: convert those containing 'period' in their key to pandas Timestamps
-        updated_params = {k: pd.Timestamp(v) if 'period' in k else v
-                          for k, v in model_def.items() if k != 'name'}
-
-        # Print formatted run information
-        print(f"{'='*30}\n🚀 Start {model_name}\n{'='*30}")
-
-        # Execute the full ML workflow for the current scenario
-        ml_model = initialize_ml_model(params, updated_params)
-
-        # ---- Calculate Deltas ----
-        bt_perf = ml_model['backtest'].bt_performance
-
-        ml_val = bt_perf.loc['ML', 'Average Return']
-        avg_ml_val = bt_perf.loc['AVG_ML', 'Average Return']
-        fivefifty_val = bt_perf.loc['5050', 'Average Return']
-        index_val = bt_perf.loc['INDEX', 'Average Return']
-
-        excess = {
-            'ML_minus_AVG_ML': ml_val - avg_ml_val if (ml_val is not None and avg_ml_val is not None) else None,
-            'ML_minus_5050'  : ml_val - fivefifty_val if (ml_val is not None and fivefifty_val is not None) else None,
-            'ML_minus_INDEX' : ml_val - index_val if (ml_val is not None and index_val is not None) else None
-        }
-        df_excess_return = pd.DataFrame([excess], index=[model_name])
-
-        # --- Extract Feature Stats p-Values
-        feature_stats = ml_model['trained_ml_model'].feature_stats
-        pvalue_dict = feature_stats['p-Value'].to_dict()
-        df_pvalue_final = pd.DataFrame([pvalue_dict], index=[model_name])
-
-        # --- Extract Feature Importance
-        imp_stats = ml_model['trained_ml_model'].df_importance
-        importance_dict = imp_stats["Importance"].to_dict()
-        df_importance_final = pd.DataFrame([importance_dict], index=[model_name])
-
-        # --- Goodness of model
-        good_of_model = ml_model['trained_ml_model'].goodness_of_model
-        good_of_model = good_of_model.loc[good_of_model['Metric'] == 'R² on training'].copy()
-        good_of_model.index = good_of_model['Metric']
-        good_of_model = good_of_model.drop(columns=['Metric'])
-        gm_dict = good_of_model["Value"].to_dict()
-        df_goodness_of_model_final = pd.DataFrame([gm_dict], index=[model_name])
-
-        # --- Average Factor Weights over Time
-        avg_factor_weights = ml_model['applied_ml_model'].factor_weight_predicted
-        df_avg_factor_weights = pd.DataFrame(avg_factor_weights.mean(), columns=[model_name]).T
-        df_avg_factor_weights.columns = ml_model['params']['relevant_factors']
-
-        # Gather all outputs for this model/scenario in a dedicated results dictionary
-        specific_ml_results = {
-            'Model': model_name,
-            'Params': ml_model['params'],
-            'GetData': ml_model['data'],
-            'GetStockScores': ml_model['stock_scores'],
-            'TrainedMLModel': ml_model['trained_ml_model'],
-            'AppliedModel': ml_model['applied_ml_model'],
-            'BackTest': ml_model['backtest'],
-            'ExcessReturns': df_excess_return,
-            'FeatureStats': df_pvalue_final,
-            'FeatureImportance': df_importance_final,
-            'GoodnessOfModel': df_goodness_of_model_final,
-            'AverageFactorWeights': df_avg_factor_weights
-        }
-
-        # Save the results for further analysis
-        results.append(specific_ml_results)
-        print(f"✅ {model_name} done\n")
-
-    # Return the list of result dictionaries for all model definitions
-    return results
-
-def get_return_stats(return_ts, periods_per_year=252):
-    """
-    Compute key performance statistics from a return series.
-
-    Overview
-    --------
-    Accepts a vector (Series) or panel (DataFrame) of periodic returns and
-    derives a compact set of risk/return metrics. If a DataFrame is passed,
-    calculations are performed column-wise.
-
-    Parameters
-    ----------
-    return_ts : pandas.Series or pandas.DataFrame
-        Periodic simple returns (e.g., daily). If a DataFrame is provided,
-        each column is treated as a separate strategy.
-    periods_per_year : int, default 252
-        Annualization constant (252 for daily, 52 for weekly, 12 for monthly).
-
-    Returns
-    -------
-    pandas.DataFrame
-        A DataFrame with the following columns (indexed by the input columns
-        or a single row for a Series):
-        - 'Total_Return'            : Cumulative simple return over the sample.
-        - 'Annualized_Return'       : CAGR computed from the cumulative path.
-        - 'Annualized_Volatility'   : Std. dev. of periodic returns × sqrt(periods_per_year).
-        - 'Max_Drawdown'            : Minimum peak-to-trough drawdown of the equity curve.
-
-    Notes
-    -----
-    - CAGR uses the standard formula: (ending_value)^(1/years) - 1, where
-      years = len(return_ts) / periods_per_year.
-    - Max drawdown is computed from the cumulative returns path via running peaks.
-    - All operations are vectorized; results align with columns if `return_ts`
-      is a DataFrame.
-    """
-
-    stats = {}
-
-    # Build cumulative equity curve(s): (1 + r_t) compounded over time
-    cum_returns = (1 + return_ts).cumprod()
-
-    # Total simple return over the full sample (per column if DataFrame)
-    total_return = cum_returns.iloc[-1] - 1
-
-    # Annualized return (CAGR): scale the total growth over the sample length
-    num_years = len(return_ts) / periods_per_year
-    annual_return = (cum_returns.iloc[-1]) ** (1 / num_years) - 1
-
-    # Annualized volatility: scale periodic std by sqrt(periods_per_year)
-    annual_vol = return_ts.std() * np.sqrt(periods_per_year)
-
-    # Max drawdown: compute from running peak of the equity curve
-    roll_max = cum_returns.cummax()
-    drawdown = cum_returns / roll_max - 1.0
-    max_drawdown = drawdown.min()
-
-    # Assemble metrics into a tidy DataFrame
-    stats['Total_Return'] = total_return
-    stats['Annualized_Return'] = annual_return
-    stats['Annualized_Volatility'] = annual_vol
-    stats['Max_Drawdown'] = max_drawdown
-
-    return pd.DataFrame(stats)
-
 
 class GetData:
     """
@@ -735,7 +303,7 @@ class GetStockScores:
         roe_ranks = pd.DataFrame(index=vol_12m.index, columns=vol_12m.columns)
 
         # ===== 3. For each date, assign quintile ranks for each factor =====
-        for date in tqdm(vol_12m.index, desc='Calculate Stock Scores'):
+        for date in vol_12m.index:
             row_mom = perf_12m.loc[date]
             row_vol = vol_12m.loc[date]
             row_roe = roe_12m.loc[date]
@@ -1094,7 +662,7 @@ class TrainMLModel:
         x_features = pd.DataFrame()
 
         # 2. For each eligible training period, determine optimal blend weight by maximizing forward return
-        for date in tqdm(month_ends[:-2], desc='Train Model'):  # Exclude last 2 for stability
+        for date in month_ends[:-2]:  # Exclude last 2 for stability
             try:
                 # Next month's endpoints
                 next_date = month_ends[month_ends > date].iloc[0]
@@ -1308,7 +876,7 @@ class ApplyMLModel:
         weights = pd.DataFrame(index=self.mom_ranks.index, columns=['WEIGHT_FACTOR_1', 'WEIGHT_FACTOR_2'])
 
         # Loop over all dates to compute ML-predicted weights
-        for date in tqdm(self.mom_ranks.index, desc="ML factor model is applied to get monthly factor weights"):
+        for date in self.mom_ranks.index:
             try:
                 # Each factor: cross-section for this date
                 mom = self.perf_12m.loc[date].dropna()
@@ -1536,7 +1104,7 @@ class CalculateBacktest:
         }
 
         # Iterate rebalancing periods
-        for date in tqdm(month_ends[:-1], desc='Calculate Backtest'):
+        for date in month_ends[:-1]:
             # Define out-of-sample window: after 'date' up to next month end
             period_start = date + pd.Timedelta(days=1)
             period_end = month_ends[month_ends > date].iloc[0]
@@ -1594,8 +1162,433 @@ class CalculateBacktest:
             }
 
         self.bt_performance = pd.DataFrame(performance_dict).T
-        # print("Calculate Backtest done.")
 
+
+def initialize_ml_model(params, update_params):
+    """
+    Run the complete machine learning (ML) backtest workflow for one scenario.
+
+    Workflow
+    --------
+    1. Merge scenario-specific overrides into `params`.
+    2. Load and preprocess input data (prices, weights, ROE, risk-free, VIX).
+    3. Compute factor scores (momentum, volatility, ROE) and descriptive statistics.
+    4. Train the ML model to predict optimal two-factor blend weights.
+    5. Apply the model to derive factor weights and final stock weights.
+    6. Run the portfolio backtest simulation.
+    7. Collect all outputs and intermediate artifacts in a summary dictionary.
+
+    Parameters
+    ----------
+    params : dict
+        Base configuration dictionary, including:
+          - frequencies (str, int)
+          - training/test periods (Timestamp)
+          - ml_training_factors (list of str)
+          - relevant_factors (list of str)
+          - ml_model (str, model name)
+    update_params : dict
+        Scenario-specific overrides, e.g. alternative training/test windows,
+        feature subsets, or ML model choice.
+
+    Returns
+    -------
+    dict
+        Dictionary with all scenario results:
+        {
+          'params' : dict,
+          'data' : GetData,
+          'stock_scores' : GetStockScores,
+          'trained_ml_model' : TrainMLModel,
+          'applied_ml_model' : ApplyMLModel,
+          'backtest' : CalculateBacktest
+        }
+
+    Notes
+    -----
+    - Mutates `params` in-place by updating with `update_params`.
+    - Provides a single entry point to reproduce an entire workflow run.
+    """
+
+    # 1. Update parameters with scenario/model-specific settings
+    params.update(update_params)
+
+    # 2. Load all required data and generate descriptive statistics
+    data_ = GetData(params=params)
+    data_.get_data()  # Populate stock prices, index weights, ROE, RF, VIX, returns
+
+    # 3. Compute stock-level factor scores and descriptive stats
+    stock_scores_ = GetStockScores(data=data_, params=params)
+    stock_scores_.get_stock_scores()          # Factor ranks & raw metrics
+    stock_scores_.get_descriptive_statistics()  # Data coverage, factor returns, plots
+
+    # 4. Train ML model to predict optimal factor integration weights
+    trained_ml_model_ = TrainMLModel(stock_scores=stock_scores_, data=data_, params=params)
+    trained_ml_model_.train_model()
+
+    # 5. Apply trained ML model to generate time-varying factor and stock weights
+    applied_ml_model_ = ApplyMLModel(
+        data=data_, params=params,
+        stock_scores=stock_scores_,
+        trained_model=trained_ml_model_
+    )
+    applied_ml_model_.get_factor_weight()   # Predict monthly blend weights
+    applied_ml_model_.get_stock_weights()   # Translate blend into stock-level weights
+
+    # 6. Run backtest to simulate portfolio performance
+    backtest_ = CalculateBacktest(data=data_, params=params, applied_ml_model=applied_ml_model_)
+    backtest_.run_backtest()
+
+    # 7. Collect all components into a summary dictionary
+    summary_dict = {
+        'params': params,
+        'data': data_,
+        'stock_scores': stock_scores_,
+        'trained_ml_model': trained_ml_model_,
+        'applied_ml_model': applied_ml_model_,
+        'backtest': backtest_
+    }
+
+    return summary_dict
+
+def get_factor_return(factor_values, label_order, current_index_weights, past_30d_return):
+    """
+    Compute the compounded return of a quintile-sorted factor portfolio.
+
+    Method
+    ------
+    1. Assign tickers to quintiles using `pd.qcut` on `factor_values`.
+    2. Weight each stock by (index_weight × quintile_label), then normalize to 1.
+    3. Multiply recent daily returns by these weights, summing across tickers.
+    4. Compound the resulting time series into a single window return.
+
+    Parameters
+    ----------
+    factor_values : pandas.Series
+        Factor values for one cross-section (index = tickers).
+    label_order : sequence of int
+        Quintile labels to apply (e.g., [1,2,3,4,5] for ascending or reversed for descending).
+    current_index_weights : pandas.Series
+        Index constituent weights for the same date (aligned to tickers).
+    past_30d_return : pandas.DataFrame
+        Past daily returns (rows = dates, columns = tickers).
+
+    Returns
+    -------
+    float
+        Compounded return over the window, as decimal (e.g., 0.03 = +3%).
+
+    Notes
+    -----
+    - Inputs must be aligned by ticker.
+    - Missing values effectively contribute zero.
+    """
+
+    # 1. Quintile assignment: map factor values into 5 bins
+    #    The labels define which quintile receives higher weight.
+    weights = pd.qcut(factor_values, q=5, labels=label_order).astype(int) * current_index_weights
+
+    # 2. Normalize weights to ensure full portfolio allocation (sum = 1)
+    weights = weights / weights.sum()
+
+    # 3. Compute daily portfolio return as weighted sum of asset returns
+    return_ts = (weights * past_30d_return).sum(axis=1)
+
+    # 4. Compound over the 30-day window to obtain total return
+    return (1 + return_ts).cumprod().iloc[-1] - 1
+
+def extract_features(mom, vol, roe, rf, vix, past_30d_return, current_index_weights):
+    """
+    Build aggregate features for a single cross-section (one training/inference sample).
+
+    Overview
+    --------
+    The feature set summarizes (i) recent factor performance, (ii) cross-sectional structure,
+    (iii) macro risk proxies, and (iv) the market state of the benchmark constructed
+    from current index weights. These features are later fed into the ML regressor
+    to predict two-factor blend weights.
+
+    Included Signals
+    ----------------
+    - Past factor portfolio returns:
+      Quintile portfolios formed on momentum, volatility, and ROE.
+    - Cross-sectional dispersion:
+      Standard deviation of raw factor values (mom/vol/roe).
+    - Cross-factor structure:
+      Pairwise correlations (mom–vol, mom–roe) in the cross-section.
+    - Macro/risk proxies:
+      Risk-free rate (RF) and VIX (percent inputs converted to decimals).
+    - Market state:
+      Cumulative return of the index over the past window and its annualized volatility.
+
+    Parameters
+    ----------
+    mom, vol, roe : pandas.Series
+        Raw factor cross-sections for the current date (index = tickers).
+    rf, vix : pandas.Series or pandas.DataFrame or float
+        Risk-free rate and VIX for the current date. If series/dataframes are provided,
+        the first element (`.iloc[0]`) is used. Expected in percent; converted to decimals.
+    past_30d_return : pandas.DataFrame
+        Recent daily returns (rows = dates, columns = tickers) ending just before the current date.
+    current_index_weights : pandas.Series
+        Index constituent weights for the current date (index = tickers). Not necessarily normalized.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One-row feature frame where the index are internal feature keys and columns are:
+        - 'value': numeric feature value
+        - 'label': short feature name used downstream (e.g., 'past_mom_return', 'rf').
+
+    Notes
+    -----
+    - Tickers across inputs should be alignable; assets missing in a component implicitly drop out.
+    - The benchmark time series is computed as a weighted sum of asset returns using `current_index_weights`.
+    - Annualization uses 252 trading days when computing volatility.
+    - Factor portfolio formation uses quintiles with explicit label ordering per factor.
+    """
+
+    # 1) Benchmark (index) return time series over the window using current index weights
+    past_index_return_ts = (past_30d_return * current_index_weights).sum(axis=1)
+    # 2) Cumulative window return of the benchmark
+    past_index_return = (1 + past_index_return_ts).cumprod().iloc[-1] - 1
+    # 3) Annualized volatility of the benchmark over the window
+    past_index_vola = past_index_return_ts.std() * np.sqrt(252)
+
+    # 4) Factor portfolio returns via quintile portfolios
+    #    Momentum: ascending labels (higher momentum → higher label)
+    past_mom_return = get_factor_return(mom, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
+    #    Volatility: descending labels (lower vol → higher label)
+    past_vol_return = get_factor_return(vol, [5, 4, 3, 2, 1], current_index_weights, past_30d_return)
+    #    ROE: ascending labels (higher profitability → higher label)
+    past_roe_return = get_factor_return(roe, [1, 2, 3, 4, 5], current_index_weights, past_30d_return)
+
+    # 5) Assemble features (values + human-readable labels)
+    features = {
+        # Historical factor returns
+        'past_mom_return': {'value': past_mom_return, 'label': 'past_mom_return'},
+        'past_vol_return': {'value': past_vol_return, 'label': 'past_vol_return'},
+        'past_roe_return': {'value': past_roe_return, 'label': 'past_roe_return'},
+
+        # Cross-sectional dispersion of raw factor values
+        'momentum_std':    {'value': mom.std(), 'label': 'std_mom'},
+        'volatility_std':  {'value': vol.std(), 'label': 'std_vol'},
+        'roe_std':         {'value': roe.std(), 'label': 'std_roe'},
+
+        # Cross-factor correlations in the cross-section
+        'mom_vol_corr':    {'value': mom.corr(vol), 'label': 'corr_mom_vol'},
+        'mom_roe_corr':    {'value': mom.corr(roe), 'label': 'corr_mom_roe'},
+
+        # Macro / market proxies (convert percent → decimal)
+        'rf':              {'value': rf.iloc[0]/100,  'label': 'rf'},
+        'vix':             {'value': vix.iloc[0]/100, 'label': 'vix'},
+
+        # Benchmark state over the window
+        'past_index_return': {'value': past_index_return, 'label': 'past_index_return'},
+        'past_index_vola':   {'value': past_index_vola,   'label': 'past_index_vola'}
+    }
+
+    # 6) Convert to one-row DataFrame (index=feature keys, columns=['value','label'])
+    df = pd.DataFrame.from_dict(features, orient='index')
+    return df
+
+def run_ml_backtests(model_definitions, params):
+    """
+    Execute multiple ML scenarios and collect comparable outputs.
+
+    Overview
+    --------
+    Iterates over scenario definitions, merges each scenario's overrides into the
+    shared configuration, runs the full ML workflow, and aggregates a compact
+    set of artifacts for downstream comparison (excess returns, feature stats,
+    importances, etc.).
+
+    Parameters
+    ----------
+    model_definitions : list[dict]
+        One dict per scenario. Each dict must contain:
+        - 'name' : str
+            Human-readable scenario label.
+        - *optional* overrides whose keys may include:
+            'training_start_period', 'training_end_period',
+            'test_start_period', 'test_end_period',
+            'ml_training_factors', 'relevant_factors', 'ml_model', ...
+        Any key containing the substring 'period' is parsed to `pandas.Timestamp`.
+    params : dict
+        Base configuration reused across scenarios (frequencies, default periods,
+        features, factors, model type, etc.).
+
+    Returns
+    -------
+    list[dict]
+        One result dict per scenario with the following keys:
+        - 'Model'                : str
+        - 'Params'               : dict
+        - 'GetData'              : GetData
+        - 'GetStockScores'       : GetStockScores
+        - 'TrainedMLModel'       : TrainMLModel
+        - 'AppliedModel'         : ApplyMLModel
+        - 'BackTest'             : CalculateBacktest
+        - 'ExcessReturns'        : pandas.DataFrame    # row indexed by scenario name
+        - 'FeatureStats'         : pandas.DataFrame    # p-values per feature
+        - 'FeatureImportance'    : pandas.DataFrame    # model importances
+        - 'GoodnessOfModel'      : pandas.DataFrame    # e.g., R² on training
+        - 'AverageFactorWeights' : pandas.DataFrame    # mean factor weights over time
+
+    Side Effects
+    ------------
+    The call to `initialize_ml_model(params, updated_params)` **mutates `params`
+    in place** by updating it with the scenario overrides. If you reuse the same
+    `params` dict across scenarios (as done here), later scenarios inherit the
+    overrides from earlier ones. To avoid bleed-through, pass a shallow copy
+    (e.g., `params.copy()`) when invoking this function or construct `params`
+    anew for each run.
+
+    Notes
+    -----
+    - This function does not perform error handling; exceptions raised inside
+      the workflow are propagated to the caller.
+
+    """
+
+    results = []
+
+    # Loop over all model definitions (scenarios) one by one
+    for i, model_def in enumerate(model_definitions, start=1):
+        model_name = model_def['name']
+
+        # Parse scenario parameters: convert those containing 'period' in their key to pandas Timestamps
+        updated_params = {k: pd.Timestamp(v) if 'period' in k else v
+                          for k, v in model_def.items() if k != 'name'}
+
+
+        # Execute the full ML workflow for the current scenario
+        ml_model = initialize_ml_model(params, updated_params)
+
+        # ---- Calculate Deltas ----
+        bt_perf = ml_model['backtest'].bt_performance
+
+        ml_val = bt_perf.loc['ML', 'Average Return']
+        avg_ml_val = bt_perf.loc['AVG_ML', 'Average Return']
+        fivefifty_val = bt_perf.loc['5050', 'Average Return']
+        index_val = bt_perf.loc['INDEX', 'Average Return']
+
+        excess = {
+            'ML_minus_AVG_ML': ml_val - avg_ml_val if (ml_val is not None and avg_ml_val is not None) else None,
+            'ML_minus_5050'  : ml_val - fivefifty_val if (ml_val is not None and fivefifty_val is not None) else None,
+            'ML_minus_INDEX' : ml_val - index_val if (ml_val is not None and index_val is not None) else None
+        }
+        df_excess_return = pd.DataFrame([excess], index=[model_name])
+
+        # --- Extract Feature Stats p-Values
+        feature_stats = ml_model['trained_ml_model'].feature_stats
+        pvalue_dict = feature_stats['p-Value'].to_dict()
+        df_pvalue_final = pd.DataFrame([pvalue_dict], index=[model_name])
+
+        # --- Extract Feature Importance
+        imp_stats = ml_model['trained_ml_model'].df_importance
+        importance_dict = imp_stats["Importance"].to_dict()
+        df_importance_final = pd.DataFrame([importance_dict], index=[model_name])
+
+        # --- Goodness of model
+        good_of_model = ml_model['trained_ml_model'].goodness_of_model
+        good_of_model = good_of_model.loc[good_of_model['Metric'] == 'R² on training'].copy()
+        good_of_model.index = good_of_model['Metric']
+        good_of_model = good_of_model.drop(columns=['Metric'])
+        gm_dict = good_of_model["Value"].to_dict()
+        df_goodness_of_model_final = pd.DataFrame([gm_dict], index=[model_name])
+
+        # --- Average Factor Weights over Time
+        avg_factor_weights = ml_model['applied_ml_model'].factor_weight_predicted
+        df_avg_factor_weights = pd.DataFrame(avg_factor_weights.mean(), columns=[model_name]).T
+        df_avg_factor_weights.columns = ml_model['params']['relevant_factors']
+
+        # Gather all outputs for this model/scenario in a dedicated results dictionary
+        specific_ml_results = {
+            'Model': model_name,
+            'Params': ml_model['params'],
+            'GetData': ml_model['data'],
+            'GetStockScores': ml_model['stock_scores'],
+            'TrainedMLModel': ml_model['trained_ml_model'],
+            'AppliedModel': ml_model['applied_ml_model'],
+            'BackTest': ml_model['backtest'],
+            'ExcessReturns': df_excess_return,
+            'FeatureStats': df_pvalue_final,
+            'FeatureImportance': df_importance_final,
+            'GoodnessOfModel': df_goodness_of_model_final,
+            'AverageFactorWeights': df_avg_factor_weights
+        }
+
+        # Save the results for further analysis
+        results.append(specific_ml_results)
+
+    # Return the list of result dictionaries for all model definitions
+    return results
+
+def get_return_stats(return_ts, periods_per_year=252):
+    """
+    Compute key performance statistics from a return series.
+
+    Overview
+    --------
+    Accepts a vector (Series) or panel (DataFrame) of periodic returns and
+    derives a compact set of risk/return metrics. If a DataFrame is passed,
+    calculations are performed column-wise.
+
+    Parameters
+    ----------
+    return_ts : pandas.Series or pandas.DataFrame
+        Periodic simple returns (e.g., daily). If a DataFrame is provided,
+        each column is treated as a separate strategy.
+    periods_per_year : int, default 252
+        Annualization constant (252 for daily, 52 for weekly, 12 for monthly).
+
+    Returns
+    -------
+    pandas.DataFrame
+        A DataFrame with the following columns (indexed by the input columns
+        or a single row for a Series):
+        - 'Total_Return'            : Cumulative simple return over the sample.
+        - 'Annualized_Return'       : CAGR computed from the cumulative path.
+        - 'Annualized_Volatility'   : Std. dev. of periodic returns × sqrt(periods_per_year).
+        - 'Max_Drawdown'            : Minimum peak-to-trough drawdown of the equity curve.
+
+    Notes
+    -----
+    - CAGR uses the standard formula: (ending_value)^(1/years) - 1, where
+      years = len(return_ts) / periods_per_year.
+    - Max drawdown is computed from the cumulative returns path via running peaks.
+    - All operations are vectorized; results align with columns if `return_ts`
+      is a DataFrame.
+    """
+
+    stats = {}
+
+    # Build cumulative equity curve(s): (1 + r_t) compounded over time
+    cum_returns = (1 + return_ts).cumprod()
+
+    # Total simple return over the full sample (per column if DataFrame)
+    total_return = cum_returns.iloc[-1] - 1
+
+    # Annualized return (CAGR): scale the total growth over the sample length
+    num_years = len(return_ts) / periods_per_year
+    annual_return = (cum_returns.iloc[-1]) ** (1 / num_years) - 1
+
+    # Annualized volatility: scale periodic std by sqrt(periods_per_year)
+    annual_vol = return_ts.std() * np.sqrt(periods_per_year)
+
+    # Max drawdown: compute from running peak of the equity curve
+    roll_max = cum_returns.cummax()
+    drawdown = cum_returns / roll_max - 1.0
+    max_drawdown = drawdown.min()
+
+    # Assemble metrics into a tidy DataFrame
+    stats['Total_Return'] = total_return
+    stats['Annualized_Return'] = annual_return
+    stats['Annualized_Volatility'] = annual_vol
+    stats['Max_Drawdown'] = max_drawdown
+
+    return pd.DataFrame(stats)
 
 if __name__ == '__main__':
 
