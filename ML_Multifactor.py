@@ -15,7 +15,6 @@ Notes
 - Paths for cached inputs/outputs are configurable via `params`.
 """
 
-import pickle
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -28,9 +27,6 @@ from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostRegressor
-
-DATA_PICKLE_FILE_PATH = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/inputs/data.pkl'
-FACTOR_SCORES_PICKLE_FILE_PATH = 'G:/TEC101/ALLE/Zink/40_CPF Program/Data/Final Project/outputs/factor_scores.pkl'
 
 def initialize_ml_model(params, update_params):
     """
@@ -318,18 +314,6 @@ def run_ml_backtests(model_definitions, params):
     - This function does not perform error handling; exceptions raised inside
       the workflow are propagated to the caller.
 
-    Examples
-    --------
-    >>> scenarios = [
-    ...     dict(name="Baseline",
-    ...          training_end_period="2014-12-31",
-    ...          test_start_period="2015-01-01",
-    ...          ml_model="lightgbm"),
-    ...     dict(name="Alt Factors",
-    ...          relevant_factors=["mom", "vol"])
-    ... ]
-    >>> results = run_ml_backtests(scenarios, params)
-    >>> results[0]["ExcessReturns"]
     """
 
     results = []
@@ -488,8 +472,6 @@ class GetData:
     ----------
     price_frequency_str : str
         Pandas offset alias for resampling (e.g., 'D' for daily, 'M' for month-end).
-    use_pickle_data : bool
-        If True, read a cached pickle; otherwise parse Excel sources.
     price_frequency_num : int
         Periods-per-year constant used for annualization (e.g., 252 for daily).
     stock_prices : pandas.DataFrame | None
@@ -512,9 +494,6 @@ class GetData:
         # Price frequency alias used for resampling (e.g., 'D', 'M', 'W-FRI').
         self.price_frequency_str = params['price_frequency_str']
 
-        # Toggle between fast cached load (pickle) and full Excel ingest.
-        self.use_pickle_data = params['use_pickle_data']
-
         # Periods-per-year constant (252 for daily, 12 for monthly, etc.).
         self.price_frequency_num = params['price_frequency_num']
 
@@ -533,9 +512,7 @@ class GetData:
 
         Behavior
         --------
-        - If `use_pickle_data` is True, read a cached pickle containing
-          {'stock_prices','index_weights','roe','rf_vix'}.
-        - Otherwise, read Excel sheets (mapping, prices, index weights, ROE, RF/VIX),
+        - Read Excel sheets (mapping, prices, index weights, ROE, RF/VIX),
           resample to `price_frequency_str` (last observation), align indices/columns
           via the ticker mapping, forward-fill where appropriate, and row-normalize
           index weights.
@@ -559,78 +536,70 @@ class GetData:
         """
 
         # Fast path: load preprocessed binary bundle if available/desired.
-        if self.use_pickle_data:
-            with open(DATA_PICKLE_FILE_PATH, 'rb') as file:
-                data_dictionary = pickle.load(file)
+        # === Ingest from Excel sources and perform alignment/cleanup ===
 
+        # 1) Security code → ticker mapping (e.g., MSCI to Bloomberg tickers)
+        ticker_mapping = pd.read_excel(r'data.xlsx', sheet_name='isin_msci_ticker_mapping')
+        ticker_mapping.drop(columns=['Unnamed: 0'], inplace=True)
+        ticker_mapping['MSCI_SECURITY_CODE'] = ticker_mapping['MSCI_SECURITY_CODE'].astype(str)
+        ticker_mapping['BBG_TICKER'] = ticker_mapping['BBG_TICKER'].astype(str)
+        mapping_dict = dict(zip(
+            ticker_mapping['MSCI_SECURITY_CODE'],
+            ticker_mapping['BBG_TICKER'])
+        )
+
+        # 2) Prices: set date index, resample if needed, then rename/keep mapped tickers
+        stock_prices = pd.read_excel(r'data.xlsx', sheet_name='stock_prices')
+        stock_prices.index = stock_prices['POS_DATE']
+        stock_prices.drop(columns=['POS_DATE'], inplace=True)
+
+        # If not daily, downsample to the last observation of each period.
+        if self.price_frequency_str == 'D':
+            pass
         else:
-            # === Ingest from Excel sources and perform alignment/cleanup ===
+            stock_prices = stock_prices.resample(self.price_frequency_str).last()
 
-            # 1) Security code → ticker mapping (e.g., MSCI to Bloomberg tickers)
-            ticker_mapping = pd.read_excel(r'data.xlsx', sheet_name='isin_msci_ticker_mapping')
-            ticker_mapping.drop(columns=['Unnamed: 0'], inplace=True)
-            ticker_mapping['MSCI_SECURITY_CODE'] = ticker_mapping['MSCI_SECURITY_CODE'].astype(str)
-            ticker_mapping['BBG_TICKER'] = ticker_mapping['BBG_TICKER'].astype(str)
-            mapping_dict = dict(zip(
-                ticker_mapping['MSCI_SECURITY_CODE'],
-                ticker_mapping['BBG_TICKER'])
-            )
+        stock_prices = stock_prices.rename(columns=mapping_dict)
+        stock_prices = stock_prices.loc[:, stock_prices.columns.isin(mapping_dict.values())]
 
-            # 2) Prices: set date index, resample if needed, then rename/keep mapped tickers
-            stock_prices = pd.read_excel(r'data.xlsx', sheet_name='stock_prices')
-            stock_prices.index = stock_prices['POS_DATE']
-            stock_prices.drop(columns=['POS_DATE'], inplace=True)
+        # 3) Index weights: align to price calendar, ffill, row-normalize
+        index_weights = pd.read_excel(r'data.xlsx', sheet_name='index_weights')
+        index_weights.index = index_weights['AS_OF_DATE']
+        index_weights.drop(columns=['AS_OF_DATE'], inplace=True)
+        index_weights = index_weights.rename(columns=mapping_dict)
+        index_weights = index_weights.loc[:, index_weights.columns.isin(mapping_dict.values())]
+        bidx = stock_prices.index.unique()
+        index_weights = index_weights.reindex(bidx).ffill()
+        index_weights = index_weights.div(index_weights.sum(axis=1), axis=0)  # row-normalize
 
-            # If not daily, downsample to the last observation of each period.
-            if self.price_frequency_str == 'D':
-                pass
-            else:
-                stock_prices = stock_prices.resample(self.price_frequency_str).last()
+        # 4) ROE: pivot to wide format, align to prices, fill both directions
+        roe_raw = pd.read_excel(r'data.xlsx', sheet_name='roe')
+        roe = roe_raw.pivot(index='AS_OF_DATE', columns='MSCI_SECURITY_CODE', values='ROE')
+        roe.index = pd.to_datetime(roe.index, dayfirst=True)
+        roe.sort_index(inplace=True)
+        roe.columns = roe.columns.astype(str)
+        roe = roe.rename(columns=mapping_dict)
+        roe = roe.loc[:, roe.columns.isin(mapping_dict.values())]
+        roe = roe.ffill().bfill()
+        roe = roe[stock_prices.index.min():stock_prices.index.max()]
+        roe.columns.name = None
+        bidx = stock_prices.index.unique()
+        roe = roe.reindex(bidx).ffill()
 
-            stock_prices = stock_prices.rename(columns=mapping_dict)
-            stock_prices = stock_prices.loc[:, stock_prices.columns.isin(mapping_dict.values())]
+        # 5) RF & VIX: keep as two-column frame with index as datetime
+        rf_vix = pd.read_excel(r'data.xlsx', sheet_name='rf_vix')
+        rf_vix.index = rf_vix['Date']
+        rf_vix.drop(columns=['Date'], inplace=True)
+        rf_vix.index = pd.to_datetime(rf_vix.index)
 
-            # 3) Index weights: align to price calendar, ffill, row-normalize
-            index_weights = pd.read_excel(r'data.xlsx', sheet_name='index_weights')
-            index_weights.index = index_weights['AS_OF_DATE']
-            index_weights.drop(columns=['AS_OF_DATE'], inplace=True)
-            index_weights = index_weights.rename(columns=mapping_dict)
-            index_weights = index_weights.loc[:, index_weights.columns.isin(mapping_dict.values())]
-            bidx = stock_prices.index.unique()
-            index_weights = index_weights.reindex(bidx).ffill()
-            index_weights = index_weights.div(index_weights.sum(axis=1), axis=0)  # row-normalize
+        # Bundle for optional caching and uniform downstream assignment
+        data_dictionary = {
+            'stock_prices': stock_prices,
+            'index_weights': index_weights,
+            'roe': roe,
+            'rf_vix': rf_vix
+        }
 
-            # 4) ROE: pivot to wide format, align to prices, fill both directions
-            roe_raw = pd.read_excel(r'data.xlsx', sheet_name='roe')
-            roe = roe_raw.pivot(index='AS_OF_DATE', columns='MSCI_SECURITY_CODE', values='ROE')
-            roe.index = pd.to_datetime(roe.index, dayfirst=True)
-            roe.sort_index(inplace=True)
-            roe.columns = roe.columns.astype(str)
-            roe = roe.rename(columns=mapping_dict)
-            roe = roe.loc[:, roe.columns.isin(mapping_dict.values())]
-            roe = roe.ffill().bfill()
-            roe = roe[stock_prices.index.min():stock_prices.index.max()]
-            roe.columns.name = None
-            bidx = stock_prices.index.unique()
-            roe = roe.reindex(bidx).ffill()
-
-            # 5) RF & VIX: keep as two-column frame with index as datetime
-            rf_vix = pd.read_excel(r'data.xlsx', sheet_name='rf_vix')
-            rf_vix.index = rf_vix['Date']
-            rf_vix.drop(columns=['Date'], inplace=True)
-            rf_vix.index = pd.to_datetime(rf_vix.index)
-
-            # Bundle for optional caching and uniform downstream assignment
-            data_dictionary = {
-                'stock_prices': stock_prices,
-                'index_weights': index_weights,
-                'roe': roe,
-                'rf_vix': rf_vix
-            }
-
-            # Optional: cache to pickle for faster subsequent runs
-            with open(DATA_PICKLE_FILE_PATH, 'wb') as file:
-                pickle.dump(data_dictionary, file)  # type: ignore
 
         # === Assign canonical attributes for downstream components ===
         self.stock_prices = data_dictionary['stock_prices']
@@ -663,8 +632,6 @@ class GetStockScores:
         Handle to preloaded market/factor data (prices, returns, weights, RF, VIX).
     roe, stock_prices, rf, vix, returns : pandas.DataFrame
         Direct references to the underlying inputs from `data`.
-    update_factor_scores : bool
-        If True, recompute factor panels/ranks; else load from pickle.
     relevant_factors : list[str]
         Factors expected downstream (e.g., ['mom','vol','roe']).
 
@@ -761,76 +728,62 @@ class GetStockScores:
         - 12-month mean ROE: rolling average.
         - Quintile ranks via `pd.qcut` (descending for MOM/ROE; inverted mapping for VOL).
 
-        Caching
-        -------
-        - If `update_factor_scores` is True, recompute and pickle results.
-        - Else, load ranks and raw panels from the cached pickle.
-
         Sets
         ----
         self.mom_ranks, self.vol_ranks, self.roe_ranks,
         self.perf_12m, self.vol_12m, self.roe_12m
         """
 
-        stock_scores = {}
         # Re-calculate factor scores if requested, else load from cache
-        if self.update_factor_scores:
-            # ===== 1. Compute rolling raw factor metrics =====
-            # 12-month (or N-period) momentum: (current price / price N periods ago) - 1
-            perf_12m = self.stock_prices / self.stock_prices.shift(self.price_frequency_num) - 1
-            # 12-month volatility: Rolling std dev of returns, annualized
-            vol_12m = self.returns.rolling(self.price_frequency_num).std() * np.sqrt(self.price_frequency_num)
-            # 12-month average ROE: Rolling mean
-            roe_12m = self.roe.rolling(self.price_frequency_num).mean()
+        # ===== 1. Compute rolling raw factor metrics =====
+        # 12-month (or N-period) momentum: (current price / price N periods ago) - 1
+        perf_12m = self.stock_prices / self.stock_prices.shift(self.price_frequency_num) - 1
+        # 12-month volatility: Rolling std dev of returns, annualized
+        vol_12m = self.returns.rolling(self.price_frequency_num).std() * np.sqrt(self.price_frequency_num)
+        # 12-month average ROE: Rolling mean
+        roe_12m = self.roe.rolling(self.price_frequency_num).mean()
 
-            # ===== 2. Initialize empty rank DataFrames =====
-            mom_ranks = pd.DataFrame(index=perf_12m.index, columns=perf_12m.columns)
-            vol_ranks = pd.DataFrame(index=vol_12m.index, columns=vol_12m.columns)
-            roe_ranks = pd.DataFrame(index=vol_12m.index, columns=vol_12m.columns)
+        # ===== 2. Initialize empty rank DataFrames =====
+        mom_ranks = pd.DataFrame(index=perf_12m.index, columns=perf_12m.columns)
+        vol_ranks = pd.DataFrame(index=vol_12m.index, columns=vol_12m.columns)
+        roe_ranks = pd.DataFrame(index=vol_12m.index, columns=vol_12m.columns)
 
-            # ===== 3. For each date, assign quintile ranks for each factor =====
-            for date in tqdm(vol_12m.index, desc='Calculate Stock Scores'):
-                row_mom = perf_12m.loc[date]
-                row_vol = vol_12m.loc[date]
-                row_roe = roe_12m.loc[date]
+        # ===== 3. For each date, assign quintile ranks for each factor =====
+        for date in tqdm(vol_12m.index, desc='Calculate Stock Scores'):
+            row_mom = perf_12m.loc[date]
+            row_vol = vol_12m.loc[date]
+            row_roe = roe_12m.loc[date]
 
-                try:
-                    # Higher is better for momentum/ROE: rank descending, vol: rank descending (lower vol = higher quintile)
-                    ranks_mom = row_mom.rank(method="first", ascending=False)
-                    quintiles_mom = pd.qcut(ranks_mom, q=5, labels=[5, 4, 3, 2, 1]).astype(int)
-                    mom_ranks.loc[date] = quintiles_mom
+            try:
+                # Higher is better for momentum/ROE: rank descending, vol: rank descending (lower vol = higher quintile)
+                ranks_mom = row_mom.rank(method="first", ascending=False)
+                quintiles_mom = pd.qcut(ranks_mom, q=5, labels=[5, 4, 3, 2, 1]).astype(int)
+                mom_ranks.loc[date] = quintiles_mom
 
-                    ranks_vol = row_vol.rank(method="first", ascending=False)
-                    quintiles_vol = pd.qcut(ranks_vol, q=5, labels=[1, 2, 3, 4, 5]).astype(int)
-                    vol_ranks.loc[date] = quintiles_vol
+                ranks_vol = row_vol.rank(method="first", ascending=False)
+                quintiles_vol = pd.qcut(ranks_vol, q=5, labels=[1, 2, 3, 4, 5]).astype(int)
+                vol_ranks.loc[date] = quintiles_vol
 
-                    ranks_roe = row_roe.rank(method="first", ascending=False)
-                    quintiles_roe = pd.qcut(ranks_roe, q=5, labels=[5, 4, 3, 2, 1]).astype(int)
-                    roe_ranks.loc[date] = quintiles_roe
+                ranks_roe = row_roe.rank(method="first", ascending=False)
+                quintiles_roe = pd.qcut(ranks_roe, q=5, labels=[5, 4, 3, 2, 1]).astype(int)
+                roe_ranks.loc[date] = quintiles_roe
 
-                except ValueError:
-                    # If not enough non-NA values to split into quintiles, assign NAs
-                    mom_ranks.loc[date] = np.nan
-                    vol_ranks.loc[date] = np.nan
-                    roe_ranks.loc[date] = np.nan
+            except ValueError:
+                # If not enough non-NA values to split into quintiles, assign NAs
+                mom_ranks.loc[date] = np.nan
+                vol_ranks.loc[date] = np.nan
+                roe_ranks.loc[date] = np.nan
 
-            # ===== 4. Save for later speed-up =====
-            stock_scores = {
-                'mom_ranks': mom_ranks,
-                'vol_ranks': vol_ranks,
-                'roe_ranks': roe_ranks,
-                'perf_12m': perf_12m,
-                'vol_12m': vol_12m,
-                'roe_12m': roe_12m
-            }
+        # ===== 4. Save for later speed-up =====
+        stock_scores = {
+            'mom_ranks': mom_ranks,
+            'vol_ranks': vol_ranks,
+            'roe_ranks': roe_ranks,
+            'perf_12m': perf_12m,
+            'vol_12m': vol_12m,
+            'roe_12m': roe_12m
+        }
 
-            with open(FACTOR_SCORES_PICKLE_FILE_PATH, 'wb') as file:
-                pickle.dump(stock_scores, file)   # type: ignore
-
-        else:
-            # ===== Load from disk (no recalculation) =====
-            with open(FACTOR_SCORES_PICKLE_FILE_PATH, 'rb') as file:
-                stock_scores = pickle.load(file)
 
         # ===== 5. Attach as object attributes for future access =====
         self.mom_ranks = stock_scores['mom_ranks'].dropna(how='all')
@@ -1544,36 +1497,35 @@ class CalculateBacktest:
         self.bt_performance = None
 
     def run_backtest(self):
-        def run_backtest(self):
-            """
-            Compute realized daily returns for each strategy and summarize performance.
+        """
+        Compute realized daily returns for each strategy and summarize performance.
 
-            Steps
-            -----
-            1. Identify month-end rebalance dates that fall within the test window.
-            2. For each period (from month-end t to month-end t+1), apply weights fixed at t
-               to the daily returns inside that out-of-sample window.
-            3. Construct a daily return series per strategy and its cumulative path.
-            4. Aggregate to annualized metrics per strategy:
-               - Average Return  = mean(return) × price_frequency_num
-               - Volatility      = std(return) × sqrt(price_frequency_num)
-               - Sharpe Ratio    = Average Return / Volatility (no RF subtraction here)
-               - Max Drawdown    = min over time of cumulative / rolling_max(cumulative) − 1
+        Steps
+        -----
+        1. Identify month-end rebalance dates that fall within the test window.
+        2. For each period (from month-end t to month-end t+1), apply weights fixed at t
+           to the daily returns inside that out-of-sample window.
+        3. Construct a daily return series per strategy and its cumulative path.
+        4. Aggregate to annualized metrics per strategy:
+           - Average Return  = mean(return) × price_frequency_num
+           - Volatility      = std(return) × sqrt(price_frequency_num)
+           - Sharpe Ratio    = Average Return / Volatility (no RF subtraction here)
+           - Max Drawdown    = min over time of cumulative / rolling_max(cumulative) − 1
 
-            Notes
-            -----
-            - Requires strategy weight DataFrames with month-end indices.
-            - If, for a given rebalance date, no weights or all-zero weights are available,
-              that period is skipped for the affected strategy.
-            - Weights are renormalized defensively each period to ensure row-sum = 1.
+        Notes
+        -----
+        - Requires strategy weight DataFrames with month-end indices.
+        - If, for a given rebalance date, no weights or all-zero weights are available,
+          that period is skipped for the affected strategy.
+        - Weights are renormalized defensively each period to ensure row-sum = 1.
 
-            Returns
-            -------
-            None
-                Results are written to:
-                - self.df_portfolio_returns : daily strategy returns and cumulative columns '*_CUM'
-                - self.bt_performance       : annualized summary metrics per strategy
-            """
+        Returns
+        -------
+        None
+            Results are written to:
+            - self.df_portfolio_returns : daily strategy returns and cumulative columns '*_CUM'
+            - self.bt_performance       : annualized summary metrics per strategy
+        """
 
         # Ensure returns date index is datetime
         returns = self.returns.copy(deep=True)
@@ -1667,7 +1619,6 @@ if __name__ == '__main__':
     #      feature set for the ML model, factor pair to blend, and model family.
     # -------------------------------------------------------------------------
     params_ = {
-        'use_pickle_data': True,          # Use cached pickle instead of Excel parsing
         'update_factor_scores': False,    # Recompute factor ranks or load from cache
         'price_frequency_str': 'D',       # 'D' = daily data handling
         'price_frequency_num': 252,       # Annualization factor for daily data
